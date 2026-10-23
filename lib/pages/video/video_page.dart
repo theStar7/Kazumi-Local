@@ -115,12 +115,13 @@ class _VideoPageState extends State<VideoPage>
   }
 
   void _initializePlayback() {
-    if (videoPageController.isOfflineMode) {
+    if (videoPageController.isFilePlayback) {
       _initOfflineMode();
     } else {
       _initOnlineMode();
     }
 
+    if (videoPageController.isLocalFileMode) return;
     _syncChatSubscription =
         playerController.syncplay.chatStream.listen((event) {
       final localUsername =
@@ -209,6 +210,7 @@ class _VideoPageState extends State<VideoPage>
 
   @override
   void dispose() {
+    videoPageController.endPlayback(playerController);
     clearExternalNavigationMark(_route);
     try {
       windowManager.removeListener(this);
@@ -312,6 +314,7 @@ class _VideoPageState extends State<VideoPage>
       onPopInvokedWithResult: (bool didPop, Object? result) {
         if (didPop) {
           setState(() => _isExiting = true);
+          videoPageController.endPlayback(playerController);
           playerController.beginShutdown();
         }
       },
@@ -383,7 +386,7 @@ class _VideoPageState extends State<VideoPage>
                           const SizedBox(height: 10),
                           Text(
                             videoPageController.loading
-                                ? '视频资源解析中'
+                                ? videoPageController.isLocalFileMode ? '本地视频加载中' : '视频资源解析中'
                                 : '视频资源解析成功, 播放器加载中',
                             style: const TextStyle(color: Colors.white),
                           ),
@@ -451,7 +454,7 @@ class _VideoPageState extends State<VideoPage>
                                 color: Colors.white,
                               ),
                             ),
-                          IconButton(
+                          if (!videoPageController.isLocalFileMode) IconButton(
                             icon: Icon(
                                 showDebugLog
                                     ? Icons.bug_report
@@ -490,7 +493,7 @@ class _VideoPageState extends State<VideoPage>
 
   Widget get episodePanel => Observer(builder: (context) {
         final downloads = <String, DownloadEpisode>{};
-        if (!videoPageController.isOfflineMode) {
+        if (!videoPageController.isFilePlayback) {
           for (final record in downloadController.records) {
             if (record.bangumiId != videoPageController.bangumiItem.id ||
                 record.pluginName != videoPageController.currentPlugin.name) {
@@ -518,7 +521,7 @@ class _VideoPageState extends State<VideoPage>
           selectedRoad: videoPageController.selectedEpisode.road,
           selectedEpisode: videoPageController.selectedEpisode.episode,
           downloads: downloads,
-          isOffline: videoPageController.isOfflineMode,
+          isOffline: videoPageController.isFilePlayback,
           isPlaying: playerController.playback.playing &&
               !playerController.playback.loading &&
               !videoPageController.loading,
@@ -531,7 +534,7 @@ class _VideoPageState extends State<VideoPage>
             _closeSidePanel();
             changeEpisode(episode, currentRoad: road);
           },
-          onDownload: (road) => showAdaptiveBottomSheet<void>(
+          onDownload: videoPageController.isLocalFileMode ? null : (road) => showAdaptiveBottomSheet<void>(
             context: context,
             builder: (context) => DownloadEpisodeSheet(
               road: road,
@@ -542,6 +545,7 @@ class _VideoPageState extends State<VideoPage>
       });
 
   Widget get tabBody {
+    if (videoPageController.isLocalFileMode) return episodePanel;
     final colors = Theme.of(context).colorScheme;
     final int episodeNum = videoPageController.commentsEpisode;
 

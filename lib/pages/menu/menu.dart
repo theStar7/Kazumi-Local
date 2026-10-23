@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:flutter/services.dart';
@@ -140,23 +141,29 @@ class _ScaffoldMenu extends State<ScaffoldMenu> with RouteAware {
     return Scaffold(
       body: _outlet(context),
       bottomNavigationBar: NavigationBar(
-        destinations: const <Widget>[
-          NavigationDestination(
+        destinations: <Widget>[
+          const NavigationDestination(
             selectedIcon: Icon(Icons.home),
             icon: Icon(Icons.home_outlined),
             label: '推荐',
           ),
-          NavigationDestination(
+          const NavigationDestination(
             selectedIcon: Icon(Icons.timeline),
             icon: Icon(Icons.timeline_outlined),
             label: '时间表',
           ),
-          NavigationDestination(
+          const NavigationDestination(
             selectedIcon: Icon(Icons.favorite),
             icon: Icon(Icons.favorite_outlined),
             label: '追番',
           ),
-          NavigationDestination(
+          if (Platform.isWindows)
+            const NavigationDestination(
+              selectedIcon: Icon(Icons.video_library),
+              icon: Icon(Icons.video_library_outlined),
+              label: '本地',
+            ),
+          const NavigationDestination(
             selectedIcon: Icon(Icons.settings),
             icon: Icon(Icons.settings),
             label: '我的',
@@ -188,23 +195,29 @@ class _ScaffoldMenu extends State<ScaffoldMenu> with RouteAware {
                 child: const Icon(Icons.search),
               ),
               labelType: NavigationRailLabelType.selected,
-              destinations: const <NavigationRailDestination>[
-                NavigationRailDestination(
+              destinations: <NavigationRailDestination>[
+                const NavigationRailDestination(
                   selectedIcon: Icon(Icons.home),
                   icon: Icon(Icons.home_outlined),
                   label: Text('推荐'),
                 ),
-                NavigationRailDestination(
+                const NavigationRailDestination(
                   selectedIcon: Icon(Icons.timeline),
                   icon: Icon(Icons.timeline_outlined),
                   label: Text('时间表'),
                 ),
-                NavigationRailDestination(
+                const NavigationRailDestination(
                   selectedIcon: Icon(Icons.favorite),
                   icon: Icon(Icons.favorite_border),
                   label: Text('追番'),
                 ),
-                NavigationRailDestination(
+                if (Platform.isWindows)
+                  const NavigationRailDestination(
+                    selectedIcon: Icon(Icons.video_library),
+                    icon: Icon(Icons.video_library_outlined),
+                    label: Text('本地'),
+                  ),
+                const NavigationRailDestination(
                   selectedIcon: Icon(Icons.settings),
                   icon: Icon(Icons.settings_outlined),
                   label: Text('我的'),

@@ -39,6 +39,8 @@ class PlayerItemPanel extends StatefulWidget {
     required this.onBackPressed,
     required this.setPlaybackSpeed,
     required this.showDanmakuSwitch,
+    this.clearLocalDanmakuBinding,
+    this.showSubtitles,
     required this.handleFullscreen,
     required this.enterAndroidPictureInPicture,
     required this.handleScreenShot,
@@ -66,6 +68,8 @@ class PlayerItemPanel extends StatefulWidget {
   final VoidCallback onBackPressed;
   final Future<void> Function(double) setPlaybackSpeed;
   final VoidCallback showDanmakuSwitch;
+  final VoidCallback? clearLocalDanmakuBinding;
+  final VoidCallback? showSubtitles;
   final VoidCallback? onToggleSidePanel;
   final VoidCallback handleFullscreen;
   final Future<void> Function() enterAndroidPictureInPicture;
@@ -136,7 +140,9 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
       return;
     }
 
-    final destination = await showDanmakuDestinationSheet(context);
+    final destination = videoPageController.isLocalFileMode
+        ? DanmakuDestination.remoteDanmaku
+        : await showDanmakuDestinationSheet(context);
     _holdResumeForDestinationSheet = false;
     if (!mounted) {
       return;
@@ -876,10 +882,11 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                   ),
                 ),
               if (compact) _buildDanmakuToggleButton(context),
-              PlayerPanelHoldCollectButton(
-                acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
-                bangumiItem: videoPageController.bangumiItem,
-              ),
+              if (!videoPageController.isLocalFileMode)
+                PlayerPanelHoldCollectButton(
+                  acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
+                  bangumiItem: videoPageController.bangumiItem,
+                ),
               PlayerPanelHoldMenuAnchor(
                 acquirePlayerPanelHold: widget.acquirePlayerPanelHold,
                 onVisibilityChanged: widget.onMenuVisibilityChanged,
@@ -903,32 +910,44 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                     SubmenuButton(
                         menuChildren: _superResolutionItems,
                         child: const Text('超分辨率')),
-                    _syncPlayMenuItem,
+                    if (!videoPageController.isLocalFileMode) _syncPlayMenuItem,
                   ],
                   KazumiMenuItem(
                     onPressed: widget.showDanmakuSwitch,
                     label: '弹幕切换',
                   ),
+                  if (videoPageController.isLocalFileMode && Platform.isWindows)
+                    KazumiMenuItem(
+                      onPressed: widget.showSubtitles,
+                      label: '字幕',
+                      leadingIcon: const Icon(Icons.closed_caption_outlined),
+                    ),
+                  if (videoPageController.isLocalFileMode)
+                    KazumiMenuItem(
+                      onPressed: widget.clearLocalDanmakuBinding,
+                      label: '清除弹幕关联',
+                    ),
                   if (compact) _danmakuSettingsMenuItem,
                   KazumiMenuItem(
                     onPressed: widget.showVideoInfo,
                     label: '视频详情',
                   ),
-                  KazumiMenuItem(
-                    onPressed: () {
-                      final needRestart = playerController.playback.playing;
-                      playerController.pause();
-                      RemotePlay()
-                          .castVideo(playerController.videoUrl,
-                              videoPageController.currentPlugin.referer)
-                          .whenComplete(() {
-                        if (mounted && needRestart) {
-                          playerController.play();
-                        }
-                      });
-                    },
-                    label: '远程投屏',
-                  ),
+                  if (!videoPageController.isLocalFileMode)
+                    KazumiMenuItem(
+                      onPressed: () {
+                        final needRestart = playerController.playback.playing;
+                        playerController.pause();
+                        RemotePlay()
+                            .castVideo(playerController.videoUrl,
+                                videoPageController.currentPlugin.referer)
+                            .whenComplete(() {
+                          if (mounted && needRestart) {
+                            playerController.play();
+                          }
+                        });
+                      },
+                      label: '远程投屏',
+                    ),
                   KazumiMenuItem(
                     onPressed: playerController.launchExternalPlayer,
                     label: '外部播放',
@@ -972,7 +991,8 @@ class _PlayerItemPanelState extends State<PlayerItemPanel> {
                       ),
                     ),
                   ),
-                  if (!compact) _syncPlayMenuItem,
+                  if (!compact && !videoPageController.isLocalFileMode)
+                    _syncPlayMenuItem,
                 ],
               ),
             ],

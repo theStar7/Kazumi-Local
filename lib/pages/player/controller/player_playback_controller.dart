@@ -272,6 +272,8 @@ abstract class _PlayerPlaybackController with Store {
     required bool Function() canInstall,
     int offset = 0,
     VideoSourceFormat videoSourceFormat = VideoSourceFormat.auto,
+    bool nativeSubtitles = false,
+    void Function(Player)? onPlayerCreated,
   }) async {
     startOffset = offset;
     superResolutionMode = SuperResolutionMode.fromStorageValue(
@@ -294,6 +296,7 @@ abstract class _PlayerPlaybackController with Store {
           osc: false,
           logLevel: MPVLogLevel.values[debug.playerLogLevel],
           adBlocker: adBlockerEnabled,
+          libass: nativeSubtitles,
         ),
       ),
     );
@@ -306,6 +309,16 @@ abstract class _PlayerPlaybackController with Store {
     cachePolicy.startWatching();
 
     try {
+      if (nativeSubtitles) {
+        final native = player.platform as NativePlayer;
+        await native.setProperty('sub-auto', 'no');
+        if (!isCurrentPlayer(player)) return await _discardIfNotCurrent(candidate);
+        await native.setProperty('secondary-sid', 'no');
+        if (!isCurrentPlayer(player)) return await _discardIfNotCurrent(candidate);
+        await native.setProperty('sub-ass-override', 'no');
+        if (!isCurrentPlayer(player)) return await _discardIfNotCurrent(candidate);
+      }
+      onPlayerCreated?.call(player);
       debug.playerLog.clear();
       await debug.setup(
         player,

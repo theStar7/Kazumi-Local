@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:path/path.dart' as path;
 import 'package:kazumi/pages/player/player_item_panel.dart';
 import 'package:kazumi/pages/player/player_keyboard_shortcuts.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
@@ -24,6 +25,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/pages/player/video_details_sheet.dart';
+import 'package:kazumi/pages/player/player_subtitle_sheet.dart';
 import 'package:screen_brightness_platform_interface/screen_brightness_platform_interface.dart';
 import 'package:kazumi/pages/history/history_controller.dart';
 import 'package:kazumi/services/storage/storage.dart';
@@ -591,6 +593,7 @@ class _PlayerItemState extends State<PlayerItem>
   }
 
   Future<void> _syncHistoryWithWebDav() async {
+    if (videoPageController.isLocalFileMode) return;
     if (webDavEnable && webDavEnableHistory) {
       try {
         var webDav = WebDav();
@@ -609,7 +612,7 @@ class _PlayerItemState extends State<PlayerItem>
         onSkipToNext: () => handlePreNextEpisode('next'),
         onSkipToPrevious: () => handlePreNextEpisode('prev'),
         onSeek: (position) => playerController.seek(position),
-        artworkUrl: videoPageController.bangumiItem.images['large'],
+        artworkUrl: videoPageController.mediaArtwork,
       );
       _syncAudioServiceState();
     } catch (e) {
@@ -637,18 +640,11 @@ class _PlayerItemState extends State<PlayerItem>
 
       final canSkipToPrevious = currentEpisode > 1;
       final canSkipToNext = currentEpisode < currentRoadData.data.length;
-      final bangumiTitle = videoPageController.bangumiItem.nameCn.isNotEmpty
-          ? videoPageController.bangumiItem.nameCn
-          : videoPageController.bangumiItem.name;
-
       unawaited(
         _audioController.updateSession(
-          mediaId:
-              '${videoPageController.bangumiItem.id}_${currentRoad}_$currentEpisode',
-          title: bangumiTitle,
-          album: videoPageController.isOfflineMode
-              ? videoPageController.offlinePluginName
-              : videoPageController.currentPlugin.name,
+          mediaId: videoPageController.mediaId,
+          title: videoPageController.mediaTitle,
+          album: videoPageController.mediaAlbum,
           artist: episodeRef.displayTitle,
           duration: playerController.playback.duration,
           playing: playerController.playback.playing,
@@ -1188,16 +1184,20 @@ class _PlayerItemState extends State<PlayerItem>
           playerController.panel.brightness = value;
         });
       }
-      final historyIdentity = videoPageController.currentHistoryIdentity;
-      if (playerController.playback.playerPlaying &&
-          !videoPageController.loading &&
-          historyIdentity != null &&
-          historyIdentity.canRecord) {
-        historyController.updateHistory(
-          historyIdentity,
-          playerController.playback.playerPosition,
-          duration: playerController.playback.playerDuration,
-        );
+      if (videoPageController.isLocalFileMode) {
+        unawaited(videoPageController.saveLocalProgress(playerController));
+      } else {
+        final historyIdentity = videoPageController.currentHistoryIdentity;
+        if (playerController.playback.playerPlaying &&
+            !videoPageController.loading &&
+            historyIdentity != null &&
+            historyIdentity.canRecord) {
+          historyController.updateHistory(
+            historyIdentity,
+            playerController.playback.playerPosition,
+            duration: playerController.playback.playerDuration,
+          );
+        }
       }
       final playingSelection = videoPageController.playbackEpisode;
       final playingRoadData =
@@ -1224,11 +1224,37 @@ class _PlayerItemState extends State<PlayerItem>
               currentRoad: playingSelection.road);
         }
       }
-      playerController.setSyncPlayCurrentPosition();
+      if (!videoPageController.isLocalFileMode) {
+        playerController.setSyncPlayCurrentPosition();
+      }
     });
   }
 
   void showDanmakuSwitch() {
+    if (videoPageController.isLocalFileMode) {
+      final video = videoPageController.currentLocalVideo;
+      if (video == null) return;
+      final playbackGuard = videoPageController.capturePlaybackGuard();
+      bool canApply() =>
+          mounted &&
+          playbackGuard() &&
+          videoPageController.currentLocalVideo?.id == video.id;
+      unawaited(showDanmakuSourceSheet(
+        context,
+        bangumiId: 0,
+        localRecordId: video.id,
+        initialKeyword: path.windows.basenameWithoutExtension(video.path),
+        danmakuController: playerController.danmaku,
+        onBeforeApply: videoPageController.cancelAutomaticDanmakuLoad,
+        canApply: canApply,
+        onSelected: (binding) async {
+          if (!canApply()) return;
+          await videoPageController.localVideoRepository
+              .setDanmakuBinding(video.id, binding);
+        },
+      ));
+      return;
+    }
     unawaited(showDanmakuSourceSheet(
       context,
       bangumiId: videoPageController.bangumiItem.id,
@@ -1238,11 +1264,53 @@ class _PlayerItemState extends State<PlayerItem>
     ));
   }
 
+  Future<void> clearLocalDanmakuBinding() async {
+    final video = videoPageController.currentLocalVideo;
+    if (video == null) return;
+    final playbackGuard = videoPageController.capturePlaybackGuard();
+    videoPageController.cancelAutomaticDanmakuLoad();
+    playerController.danmaku.cancelEpisodeDanmakuLoad();
+    playerController.danmaku.clearAndInvalidateScheduledDanmakus();
+    playerController.danmaku.danDanmakus.clear();
+    playerController.danmaku.setDanmakuEnabled(false);
+    try {
+      await videoPageController.localVideoRepository
+          .setDanmakuBinding(video.id, null);
+      if (mounted && playbackGuard()) {
+        KazumiDialog.showToast(message: '已清除弹幕关联');
+      }
+    } catch (error) {
+      KazumiLogger().w('Local danmaku binding failed to clear', error: error);
+      if (mounted && playbackGuard()) {
+        KazumiDialog.showToast(message: '清除弹幕关联失败');
+      }
+    }
+  }
+
   void showVideoInfo() {
     showVideoDetailsSheet(context, playerController: playerController);
   }
 
+  Future<void> showSubtitles() async {
+    if (!mounted || !videoPageController.isLocalFileMode || !Platform.isWindows) return;
+    final video = videoPageController.currentLocalVideo;
+    if (video == null) return;
+    final guard = videoPageController.capturePlaybackGuard();
+    bool canApply() => mounted && guard() &&
+        videoPageController.currentLocalVideo?.id == video.id;
+    if (!canApply()) return;
+    final hold = acquirePlayerPanelHold();
+    try {
+      await showPlayerSubtitleSheet(context,
+          controller: playerController.subtitles, canApply: canApply);
+    } finally {
+      hold.release();
+      if (canApply()) widget.keyboardFocus.requestFocus();
+    }
+  }
+
   void showSyncPlayPanel() {
+    if (videoPageController.isLocalFileMode) return;
     showSyncPlaySheet(
       context,
       playerController: playerController,
@@ -1528,6 +1596,8 @@ class _PlayerItemState extends State<PlayerItem>
                             onBackPressed: widget.onBackPressed,
                             setPlaybackSpeed: setPlaybackSpeed,
                             showDanmakuSwitch: showDanmakuSwitch,
+                            clearLocalDanmakuBinding: clearLocalDanmakuBinding,
+                            showSubtitles: showSubtitles,
                             onToggleSidePanel: widget.onToggleSidePanel,
                             handleFullscreen: handleFullscreen,
                             enterAndroidPictureInPicture:

@@ -8,8 +8,11 @@ import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:mobx/mobx.dart';
 import 'package:kazumi/utils/danmaku.dart';
+import 'package:kazumi/utils/episode_danmaku_loader.dart';
 
 part 'player_danmaku_controller.g.dart';
+
+typedef DanmakuApplyGuard = bool Function();
 
 class PlayerDanmakuController = _PlayerDanmakuController
     with _$PlayerDanmakuController;
@@ -91,8 +94,12 @@ abstract class _PlayerDanmakuController with Store {
 
   final bool Function() isLocalPlayback;
   final DownloadController downloadController;
+  final EpisodeDanmakuLoader _episodeLoader =
+      EpisodeDanmakuLoader(DanmakuApi.getDanDanmakuByEpisodeID);
 
-  late canvas.DanmakuController canvasController;
+  canvas.DanmakuController? _canvasController;
+  canvas.DanmakuController get canvasController => _canvasController!;
+  set canvasController(canvas.DanmakuController value) => _canvasController = value;
 
   final Map<int, List<DanmakuEntry>> danDanmakus = {};
   @observable
@@ -132,7 +139,7 @@ abstract class _PlayerDanmakuController with Store {
 
   void clearAndInvalidateScheduledDanmakus() {
     _scheduledDanmakuGeneration++;
-    canvasController.clear();
+    _canvasController?.clear();
   }
 
   // Apply fetched data only after VideoPageController validates the session.
@@ -295,20 +302,31 @@ abstract class _PlayerDanmakuController with Store {
   }
 
   @action
-  Future<bool> getDanDanmakuByEpisodeID(int episodeID) async {
+  Future<bool?> getDanDanmakuByEpisodeID(int episodeID, {DanmakuApplyGuard? canApply}) async {
     KazumiLogger().i('PlayerController: attempting to get danmaku $episodeID');
     danmakuLoading = true;
     try {
+      final res = await _episodeLoader.load(episodeID, canApply: canApply);
+      if (res == null) return null;
+      clearAndInvalidateScheduledDanmakus();
       danDanmakus.clear();
-      var res = await DanmakuApi.getDanDanmakuByEpisodeID(episodeID);
       addDanmakus(res);
       return res.isNotEmpty;
     } catch (e) {
       KazumiLogger().w('PlayerController: failed to get danmaku', error: e);
       rethrow;
     } finally {
-      danmakuLoading = false;
+      if (!_episodeLoader.isLoading) danmakuLoading = false;
     }
+  }
+
+  void cancelEpisodeDanmakuLoad() {
+    _episodeLoader.cancel();
+    danmakuLoading = false;
+  }
+
+  void closeEpisodeDanmakuLoad() {
+    _episodeLoader.close();
   }
 
   void addDanmakus(List<DanmakuEntry> danmakus) {

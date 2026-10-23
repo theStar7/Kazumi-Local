@@ -1,3 +1,5 @@
+import 'dart:io';
+
 class MenuRouteItem {
   const MenuRouteItem({required this.path});
 
@@ -22,9 +24,12 @@ class MenuRoute {
   }
 }
 
-const MenuRoute menu = MenuRoute([
+MenuRoute menuForPlatform({required bool isWindows}) => MenuRoute([
   MenuRouteItem(path: '/popular'),
   MenuRouteItem(path: '/timeline'),
   MenuRouteItem(path: '/collect'),
+  if (isWindows) MenuRouteItem(path: '/local'),
   MenuRouteItem(path: '/my'),
 ]);
+
+final MenuRoute menu = menuForPlatform(isWindows: Platform.isWindows);

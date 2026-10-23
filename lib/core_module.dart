@@ -1,4 +1,6 @@
 import 'package:flutter_modular/flutter_modular.dart';
+import 'package:kazumi/repositories/local_video_repository.dart';
+import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/pages/collect/collect_controller.dart';
 import 'package:kazumi/pages/download/download_controller.dart';
 import 'package:kazumi/pages/history/history_controller.dart';
@@ -31,6 +33,9 @@ final coreModule = createModule(
       ..addSingleton<ICollectCrudRepository>(CollectCrudRepository.new)
       ..addSingleton<IHistoryRepository>(HistoryRepository.new)
       ..addSingleton<IDownloadRepository>(DownloadRepository.new)
+      ..addSingleton<LocalVideoRepository>(
+          () => LocalVideoRepository(GStorage.localVideos,
+              foldersBox: GStorage.localVideoFolders))
       ..addSingleton<IDanmakuShieldRepository>(DanmakuShieldRepository.new)
       // Service layer.
       ..addSingleton<IDownloadManager>(DownloadManager.new)

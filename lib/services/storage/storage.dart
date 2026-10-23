@@ -27,6 +27,8 @@ class GStorage {
   static late final Box<dynamic> _setting;
   static late Box<SearchHistory> searchHistory;
   static late Box<DownloadRecord> downloads;
+  static late Box<String> localVideos;
+  static late Box<String> localVideoFolders;
 
   /// Hive directory path, initialized during init()
   static String? _hivePath;
@@ -159,6 +161,8 @@ class GStorage {
     shieldList = await _openBoxSafe<String>('shieldList');
     searchHistory = await _openBoxSafe<SearchHistory>('searchHistory');
     downloads = await _openBoxSafe<DownloadRecord>('downloads');
+    localVideos = await _openBoxSafe<String>('localVideos');
+    localVideoFolders = await _openBoxSafe<String>('localVideoFolders');
     if (Platform.isIOS) {
       await rebaseIosDownloadPaths(downloads);
     }

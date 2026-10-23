@@ -1,0 +1,9 @@
+#pragma once
+#include <string>
+inline const std::string &eh_ca_bundle() {
+  static const unsigned char bytes[] = {
+@EH_CA_BYTES@
+  };
+  static const std::string roots(reinterpret_cast<const char *>(bytes), sizeof(bytes));
+  return roots;
+}

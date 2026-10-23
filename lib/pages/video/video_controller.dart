@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:kazumi/modules/local_video/local_video.dart';
+import 'package:kazumi/repositories/local_video_repository.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/modules/roads/road_module.dart';
 import 'package:kazumi/pages/video/video_playback_args.dart';
@@ -60,6 +63,7 @@ abstract class _VideoPageController with Store implements Disposable {
     this.historyController,
     this.downloadRepository,
     this.downloadManager,
+    this.localVideoRepository,
   );
 
   late BangumiItem bangumiItem;
@@ -113,6 +117,8 @@ abstract class _VideoPageController with Store implements Disposable {
   final AsyncSessionOwner _playbackSessions = AsyncSessionOwner();
   final AsyncSessionOwner _danmakuSessions = AsyncSessionOwner();
   final AsyncSessionOwner _commentSessions = AsyncSessionOwner();
+  AsyncSession? _currentPlaybackSession;
+  bool _endedPlayback = false;
 
   @observable
   bool isPip = false;
@@ -122,6 +128,54 @@ abstract class _VideoPageController with Store implements Disposable {
 
   @observable
   bool isOfflineMode = false;
+  bool isLocalFileMode = false;
+  List<LocalVideo> _localVideos = const [];
+
+  bool get isFilePlayback => isOfflineMode || isLocalFileMode;
+
+  LocalVideo? get currentLocalVideo {
+    if (!isLocalFileMode) return null;
+    final index = playbackEpisode.episode - 1;
+    if (index < 0 || index >= _localVideos.length) return null;
+    final video = _localVideos[index];
+    return localVideoRepository.findById(video.id) ?? video;
+  }
+
+  String? get mediaArtwork => isLocalFileMode ? null : bangumiItem.images['large'];
+  String get mediaTitle => isLocalFileMode ? currentLocalVideo?.name ?? title
+      : bangumiItem.nameCn.isNotEmpty ? bangumiItem.nameCn : bangumiItem.name;
+  String get mediaId => isLocalFileMode ? currentLocalVideo!.id
+      : '${bangumiItem.id}_${playbackEpisode.road}_${playbackEpisode.episode}';
+  String get mediaAlbum => isLocalFileMode ? '本地视频'
+      : isOfflineMode ? offlinePluginName : currentPlugin.name;
+
+  bool Function() capturePlaybackGuard() {
+    final session = _currentPlaybackSession;
+    return () => session?.isActive == true;
+  }
+
+  Future<void> saveLocalProgress(PlayerController player) async {
+    final video = currentLocalVideo;
+    if (video == null || playingEpisode == null ||
+        GStorage.getSetting<bool>(SettingsKeys.privateMode)) {
+      return;
+    }
+    try {
+      await localVideoRepository.saveProgress(video.id,
+          player.playback.playerPosition, player.playback.playerDuration);
+    } catch (error) {
+      KazumiLogger().w('Local video progress failed to save', error: error);
+    }
+  }
+
+  void endPlayback(PlayerController player) {
+    if (_endedPlayback) return;
+    _endedPlayback = true;
+    unawaited(saveLocalProgress(player));
+    _playbackSessions.cancel();
+    _danmakuSessions.cancel();
+    player.danmaku.cancelEpisodeDanmakuLoad();
+  }
 
   PlaybackHistoryIdentity? _playbackHistoryIdentity;
   final Map<int, DownloadEpisode> _offlineEpisodesByNumber = {};
@@ -143,6 +197,7 @@ abstract class _VideoPageController with Store implements Disposable {
   final HistoryController historyController;
   final IDownloadRepository downloadRepository;
   final IDownloadManager downloadManager;
+  final LocalVideoRepository localVideoRepository;
 
   WebViewVideoSourceService? _videoSourceService;
 
@@ -172,6 +227,20 @@ abstract class _VideoPageController with Store implements Disposable {
           road: args.road,
           downloadedEpisodes: args.downloadedEpisodes,
         );
+      case LocalVideoPlaybackArgs():
+        isLocalFileMode = true;
+        _localVideos = args.videos;
+        title = '本地视频';
+        roadList.clear();
+        roadList.add(Road(name: '本地视频',
+            data: args.videos.map((video) => video.id).toList(),
+            identifier: args.videos.map((video) => video.name).toList()));
+        selectedEpisode = VideoEpisodeSelection(
+            episode: args.videos.indexWhere((video) => video.id == args.initialVideoId) + 1,
+            road: 0);
+        playingEpisode = null;
+        _loading = false;
+        _playbackHistoryIdentity = null;
     }
   }
 
@@ -367,6 +436,12 @@ abstract class _VideoPageController with Store implements Disposable {
   }
 
   EpisodeRef? resolveEpisode(VideoEpisodeSelection selection) {
+    if (isLocalFileMode) {
+      final index = selection.episode - 1;
+      if (selection.road != 0 || index < 0 || index >= _localVideos.length) return null;
+      return EpisodeRef.localFile(listIndex: selection.episode,
+          displayTitle: _localVideos[index].name);
+    }
     return isOfflineMode
         ? _resolveOfflineEpisode(selection.episode, road: selection.road)
         : _resolveOnlineEpisode(selection.episode, road: selection.road);
@@ -421,14 +496,18 @@ abstract class _VideoPageController with Store implements Disposable {
     int offset = 0,
     required PlayerController playerController,
   }) async {
+    if (_endedPlayback || _playbackSessions.isClosed) return;
+    unawaited(saveLocalProgress(playerController));
     final session = _playbackSessions.begin();
+    _currentPlaybackSession = session;
     final selection = VideoEpisodeSelection(
       episode: episode,
       road: currentRoad,
     );
     _beginEpisodeSwitch(selection);
     _danmakuSessions.cancel();
-    playerController.danmaku.finishDanmakuLoad();
+    playerController.danmaku.finishDanmakuLoad(disableDanmaku: true);
+    playerController.danmaku.clearAndInvalidateScheduledDanmakus();
     _videoSourceService?.cancel();
 
     await playerController.stop();
@@ -436,6 +515,11 @@ abstract class _VideoPageController with Store implements Disposable {
       return;
     }
 
+    if (isLocalFileMode) {
+      await _changeLocalEpisode(selection, offset, session: session,
+          playerController: playerController);
+      return;
+    }
     if (isOfflineMode) {
       await _changeOfflineEpisode(
         selection,
@@ -471,6 +555,44 @@ abstract class _VideoPageController with Store implements Disposable {
       session: session,
       playerController: playerController,
     );
+  }
+
+  Future<void> _changeLocalEpisode(VideoEpisodeSelection selection, int offset, {
+    required AsyncSession session, required PlayerController playerController,
+  }) async {
+    final episode = resolveEpisode(selection);
+    if (episode == null) { _failLoading('本地播放列表无效'); return; }
+    final snapshot = _localVideos[selection.episode - 1];
+    final video = localVideoRepository.findById(snapshot.id) ?? snapshot;
+    try {
+      final file = await File(video.path).open();
+      await file.close();
+    } catch (_) {
+      if (session.isActive) _failLoading('文件无法访问，请恢复原路径下的文件或重新导入');
+      return;
+    }
+    if (session.isStale) return;
+    _finishLoading();
+    final resume = GStorage.getSetting<bool>(SettingsKeys.playResume);
+    final params = PlaybackInitParams(
+      videoUrl: Uri.file(video.path, windows: true).toString(),
+      offset: offset > 0 ? offset : resume ? video.positionMilliseconds ~/ 1000 : 0,
+      isLocalPlayback: true, bangumiId: 0, pluginName: '',
+      nativeSubtitles: Platform.isWindows,
+      readSubtitleSettings: () => localVideoRepository.findById(video.id)?.subtitleSettings,
+      saveSubtitleSettings: (settings) => localVideoRepository.setSubtitleSettings(video.id, settings),
+      canApplySubtitles: () => session.isActive && !_endedPlayback,
+      episode: selection.episode, danmakuEpisodeNumber: 0,
+      httpHeaders: {}, adBlockerEnabled: false, episodeTitle: video.name,
+      referer: '', currentRoad: 0, bangumiName: video.name,
+    );
+    final initialized = await playerController.init(params);
+    if (session.isActive && initialized) {
+      playingEpisode = selection;
+      unawaited(_loadPlaybackDanmaku(playerController, params, session));
+    } else if (session.isActive) {
+      _playbackSessions.cancel();
+    }
   }
 
   Future<void> _changeOfflineEpisode(
@@ -544,6 +666,25 @@ abstract class _VideoPageController with Store implements Disposable {
     AsyncSession session,
   ) async {
     final danmakuSession = _danmakuSessions.begin();
+    if (isLocalFileMode) {
+      final binding = currentLocalVideo?.danmakuBinding;
+      if (binding == null) return;
+      try {
+        final hasDanmakus = await playerController.danmaku.getDanDanmakuByEpisodeID(
+          binding.episodeId,
+          canApply: () => session.isActive && danmakuSession.isActive,
+        );
+        if (hasDanmakus != null && session.isActive && danmakuSession.isActive) {
+          playerController.danmaku.setDanmakuEnabled(hasDanmakus &&
+              GStorage.getSetting<bool>(SettingsKeys.danmakuEnabledByDefault));
+        }
+      } catch (_) {
+        if (session.isActive && danmakuSession.isActive) {
+          KazumiDialog.showToast(message: '弹幕加载失败，可重新检索');
+        }
+      }
+      return;
+    }
     playerController.danmaku.beginDanmakuLoad();
     try {
       final result = await playerController.danmaku.fetchDanmaku(
@@ -744,9 +885,9 @@ abstract class _VideoPageController with Store implements Disposable {
   @override
   void dispose() {
     unawaited(fullscreen.close());
-    _playbackSessions.cancel();
-    _danmakuSessions.cancel();
-    _commentSessions.cancel();
+    _playbackSessions.close();
+    _danmakuSessions.close();
+    _commentSessions.close();
     _logSubscription?.cancel();
     _logSubscription = null;
     if (!_logStreamController.isClosed) {
@@ -841,6 +982,11 @@ class EpisodeRef {
   final int historyEpisodeNumber;
   final int danmakuEpisodeNumber;
   final int originalRoadIndex;
+
+  factory EpisodeRef.localFile({required int listIndex, required String displayTitle}) =>
+      EpisodeRef(listIndex: listIndex, roadIndex: 0, displayTitle: displayTitle,
+          pageUrl: '', sortNumber: null, historyEpisodeNumber: 0,
+          danmakuEpisodeNumber: 0, originalRoadIndex: 0);
 
   factory EpisodeRef.online({
     required int listIndex,

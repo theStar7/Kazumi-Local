@@ -20,6 +20,10 @@ final videoModule = createModule(
         if (args is! VideoPlaybackArgs) {
           return const RouteErrorPage(message: '播放参数无效，请返回后重试。');
         }
+        if (args is LocalVideoPlaybackArgs &&
+            !args.videos.any((video) => video.id == args.initialVideoId)) {
+          return const RouteErrorPage(message: '本地播放列表无效，请返回后重新导入。');
+        }
         return VideoPage(
           args: args,
           playerController: context.read<PlayerController>(),

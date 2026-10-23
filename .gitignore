@@ -55,3 +55,6 @@ android/build/reports/problems/
 **/macos/Pods/
 **/ios/Podfile.lock
 **/macos/Podfile.lock
+
+# Local API credentials used by scripts/build_windows.ps1
+/config/dart_defines.local.json

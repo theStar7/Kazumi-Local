@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:kazumi/pages/local_video/local_video_module.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:kazumi/bean/widget/error_widget.dart';
 import 'package:kazumi/bean/widget/image_preview.dart';
@@ -62,6 +64,7 @@ final tabModule = createModule(
             ..module(timelineModule)
             ..module(collectModule)
             ..module(myModule);
+          if (Platform.isWindows) sub.module(localVideoModule);
         },
       );
   },

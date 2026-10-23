@@ -15,6 +15,8 @@ import 'package:kazumi/pages/player/controller/player_playback_controller.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/pages/player/controller/player_syncplay_controller.dart';
 import 'package:kazumi/pages/player/controller/player_screenshot_controller.dart';
+import 'package:kazumi/pages/player/controller/player_subtitle_controller.dart';
+import 'package:kazumi/services/player/subtitle_backend.dart';
 import 'package:kazumi/services/storage/storage.dart';
 import 'package:kazumi/services/logging/logger.dart';
 import 'package:kazumi/services/shaders/shader_asset_service.dart';
@@ -43,6 +45,7 @@ class PlayerController implements Disposable {
   Future<void>? _shutdownFuture;
   final PlayerPanelController panel = PlayerPanelController();
   final PlayerScreenshotController screenshots = PlayerScreenshotController();
+  final PlayerSubtitleController subtitles = PlayerSubtitleController();
   final PlayerDebugController debug = PlayerDebugController();
 
   late final PlayerDanmakuController danmaku;
@@ -205,12 +208,23 @@ class PlayerController implements Disposable {
         canInstall: () => initialization.isActive,
         offset: params.offset,
         videoSourceFormat: params.videoSourceFormat,
+        nativeSubtitles: params.nativeSubtitles,
+        onPlayerCreated: params.nativeSubtitles ? (player) {
+          subtitles.bind(
+            NativeSubtitleBackend(player),
+            readSettings: params.readSubtitleSettings ?? () => null,
+            saveSettings: params.saveSubtitleSettings ?? (_) async {},
+            canApply: () => _ownsInitialization(initialization, player) &&
+                (params.canApplySubtitles?.call() ?? true),
+          );
+        } : null,
       );
     } catch (e) {
       if (initialization.isStale) {
         return false;
       }
       playback.loading = false;
+      subtitles.detach();
       KazumiLogger()
           .e('PlayerController: failed to initialize video', error: e);
       return false;
@@ -384,10 +398,12 @@ class PlayerController implements Disposable {
   /// method returns.
   void beginShutdown() {
     _initializations.close();
+    danmaku.closeEpisodeDanmakuLoad();
     if (_shutdownFuture != null) {
       return;
     }
     screenshots.dispose();
+    subtitles.dispose();
     final shutdown = _shutdownResources();
     _shutdownFuture = shutdown;
     unawaited(
@@ -409,6 +425,7 @@ class PlayerController implements Disposable {
   }
 
   Future<void> _releasePlaybackResources() async {
+    subtitles.detach();
     hideVolumeUITimer?.cancel();
     _volumeGestureSyncTimer?.cancel();
     FlutterVolumeController.removeListener();
@@ -433,6 +450,7 @@ class PlayerController implements Disposable {
 
   Future<void> stop() async {
     _initializations.cancel();
+    danmaku.cancelEpisodeDanmakuLoad();
     await _releasePlaybackResources();
   }
 

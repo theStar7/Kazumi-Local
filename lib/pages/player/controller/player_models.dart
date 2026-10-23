@@ -1,9 +1,14 @@
 import 'package:kazumi/services/video_source/video_source_format.dart';
+import 'package:kazumi/modules/local_video/local_video.dart';
 
 class PlaybackInitParams {
   final String videoUrl;
   final int offset;
   final bool isLocalPlayback;
+  final bool nativeSubtitles;
+  final LocalSubtitleSettings? Function()? readSubtitleSettings;
+  final Future<void> Function(LocalSubtitleSettings)? saveSubtitleSettings;
+  final bool Function()? canApplySubtitles;
   final VideoSourceFormat videoSourceFormat;
   final int bangumiId;
   final String pluginName;
@@ -25,6 +30,10 @@ class PlaybackInitParams {
     required this.videoUrl,
     required this.offset,
     required this.isLocalPlayback,
+    this.nativeSubtitles = false,
+    this.readSubtitleSettings,
+    this.saveSubtitleSettings,
+    this.canApplySubtitles,
     required this.bangumiId,
     required this.pluginName,
     required this.episode,
