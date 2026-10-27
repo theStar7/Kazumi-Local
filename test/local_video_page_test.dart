@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive_ce.dart';
 import 'package:kazumi/modules/local_video/local_video.dart';
+import 'package:kazumi/modules/local_video/local_video_folder.dart';
 import 'package:kazumi/pages/local_video/local_video_page.dart';
 import 'package:kazumi/repositories/local_video_repository.dart';
 import 'package:kazumi/services/local_video/local_video_cover_service.dart';
@@ -331,7 +332,7 @@ void main() {
   });
 
   testWidgets(
-    'disk cards preserve hierarchy and entry refreshes the current layer',
+    'disk cards preserve imported hierarchy without rescanning on entry or refresh',
     (tester) async {
       late Directory disk;
       await tester.runAsync(() async {
@@ -352,10 +353,16 @@ void main() {
       expect(find.text('连续剧'), findsOneWidget);
       expect(find.text('1.mp4'), findsNothing);
       await tester.tap(find.text('连续剧'));
-      await settleIo(tester, () => find.text('2.mp4').evaluate().isNotEmpty);
+      await settlePage(tester);
+      expect(find.text('2.mp4'), findsNothing);
+      await tester.tap(find.byTooltip('刷新'));
+      await settlePage(tester);
+      expect(find.text('2.mp4'), findsNothing);
       expect(find.text('花絮'), findsOneWidget);
       expect(find.text('extra.mp4'), findsNothing);
-      expect(find.text('新建文件夹'), findsNothing);
+      expect(find.text('新建文件夹'), findsOneWidget);
+      expect(find.text('导入视频'), findsOneWidget);
+      expect(find.text('添加已有视频'), findsOneWidget);
       expect(find.byTooltip('刷新'), findsOneWidget);
       await tester.tap(find.byTooltip('返回上级'));
       await settleIo(tester, () => find.byTooltip('返回上级').evaluate().isEmpty);
@@ -535,14 +542,15 @@ void main() {
           home: LocalVideoPage(repository: repository, onPlay: onPlay),
         ),
       );
-      expect(find.text('目录无法访问，记录已保留'), findsOneWidget);
+      expect(find.text('目录无法访问，记录已保留'), findsNothing);
       await tester.tap(find.text('离线目录'));
       await settlePage(tester);
-      expect(find.textContaining('部分目录或文件无法访问'), findsOneWidget);
+      expect(find.textContaining('部分目录或文件无法访问'), findsNothing);
+      expect(find.text('新建文件夹'), findsOneWidget);
       expect(find.text('missing.mp4'), findsOneWidget);
       expect(find.textContaining('文件已丢失'), findsOneWidget);
       expect(repository.videos, hasLength(1));
-      expect(find.byTooltip('更多操作'), findsNothing);
+      expect(find.byTooltip('更多操作'), findsOneWidget);
     },
   );
 
@@ -698,6 +706,725 @@ void main() {
       expect(service.events, ['dispose']);
     },
   );
+
+  testWidgets('library initialization finishes before actions are enabled', (
+    tester,
+  ) async {
+    final gate = Completer<void>();
+    final delayed = _InitializingRepository(box, _MemoryBox(), gate);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LocalVideoPage(repository: delayed, onPlay: onPlay),
+      ),
+    );
+    await tester.pump();
+    expect(delayed.initializationStarted, isTrue);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '导入视频'))
+          .onPressed,
+      isNull,
+    );
+    gate.complete();
+    await settlePage(tester);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '导入视频'))
+          .onPressed,
+      isNotNull,
+    );
+  });
+  testWidgets(
+    'long press video moves into folder and sticky library zone moves it out without playback',
+    (tester) async {
+      late LocalVideo video;
+      var plays = 0;
+      await tester.runAsync(() async {
+        video = (await repository.importFiles([
+          (await File(
+            '${temporary.path}/drag.mp4',
+          ).writeAsString('fixture')).path,
+        ])).added.single;
+      });
+      final folder = await repository.createVirtualFolder('目标');
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(
+            repository: repository,
+            onPlay: (_, _) async {
+              plays++;
+            },
+          ),
+        ),
+      );
+      await dragCard(
+        tester,
+        find.byKey(ValueKey('video-${video.id}')),
+        tester.getCenter(find.byKey(ValueKey('folder-${folder.id}'))),
+      );
+      await settlePage(tester);
+      expect(repository.videosIn(null), isEmpty);
+      expect(repository.videosIn(folder.id).single.id, video.id);
+      expect(plays, 0);
+      await tester.tap(find.byKey(ValueKey('folder-${folder.id}')));
+      await settlePage(tester);
+      final gesture = await startCardDrag(
+        tester,
+        find.byKey(ValueKey('video-${video.id}')),
+      );
+      expect(find.byKey(const ValueKey('move-library')), findsOneWidget);
+      await gesture.moveTo(
+        tester.getCenter(find.byKey(const ValueKey('move-library'))),
+      );
+      await gesture.up();
+      await settlePage(tester);
+      expect(repository.videosIn(folder.id), isEmpty);
+      expect(repository.videosIn(null).single.id, video.id);
+      expect(plays, 0);
+    },
+  );
+  testWidgets(
+    'long press folder moves into folder and back through library breadcrumb',
+    (tester) async {
+      final source = await repository.createVirtualFolder('源文件夹');
+      final target = await repository.createVirtualFolder('目标文件夹');
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: repository, onPlay: onPlay),
+        ),
+      );
+      await dragCard(
+        tester,
+        find.byKey(ValueKey('folder-${source.id}')),
+        tester.getCenter(find.byKey(ValueKey('folder-${target.id}'))),
+      );
+      await settlePage(tester);
+      expect(repository.findFolderById(source.id)!.parentId, target.id);
+      await tester.tap(find.byKey(ValueKey('folder-${target.id}')));
+      await settlePage(tester);
+      await dragCard(
+        tester,
+        find.byKey(ValueKey('folder-${source.id}')),
+        tester.getCenter(find.byKey(const ValueKey('breadcrumb-root'))),
+      );
+      await settlePage(tester);
+      expect(repository.findFolderById(source.id)!.parentId, isNull);
+    },
+  );
+  testWidgets('cancel and invalid folder destinations preserve hierarchy', (
+    tester,
+  ) async {
+    final parent = await repository.createVirtualFolder('父文件夹');
+    final child = await repository.createVirtualFolder(
+      '子文件夹',
+      parentId: parent.id,
+    );
+    await pumpLibrary(
+      tester,
+      MaterialApp(
+        home: LocalVideoPage(repository: repository, onPlay: onPlay),
+      ),
+    );
+    final source = find.byKey(ValueKey('folder-${parent.id}'));
+    final gesture = await startCardDrag(tester, source);
+    await gesture.moveTo(tester.getCenter(source));
+    await gesture.up();
+    await settlePage(tester);
+    final cancelled = await startCardDrag(tester, source);
+    await cancelled.moveBy(const Offset(20, 0));
+    await cancelled.cancel();
+    await settlePage(tester);
+    expect(repository.findFolderById(parent.id)!.parentId, isNull);
+    await tester.tap(
+      find.descendant(of: source, matching: find.byTooltip('文件夹操作')),
+    );
+    await settlePage(tester);
+    await tester.tap(find.text('移动到文件夹…'));
+    await settlePage(tester);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '移动到此处'))
+          .onPressed,
+      isNull,
+    );
+    expect(find.byKey(ValueKey('move-choice-${parent.id}')), findsNothing);
+    expect(find.byKey(ValueKey('move-choice-${child.id}')), findsNothing);
+    await tester.tap(find.text('取消'));
+    await settlePage(tester);
+    expect(repository.findFolderById(parent.id)!.parentId, isNull);
+    expect(repository.findFolderById(child.id)!.parentId, parent.id);
+  });
+  testWidgets('imported folder menu is at bottom right and supports move', (
+    tester,
+  ) async {
+    late LocalVideoFolder disk;
+    await tester.runAsync(() async {
+      final directory = await Directory('${temporary.path}/来源').create();
+      await repository.importDirectory(directory.path);
+      disk = repository.folders.single;
+    });
+    final target = await repository.createVirtualFolder('收藏');
+    await pumpLibrary(
+      tester,
+      MaterialApp(
+        home: LocalVideoPage(repository: repository, onPlay: onPlay),
+      ),
+    );
+    final card = find.byKey(ValueKey('folder-${disk.id}'));
+    final menu = find.descendant(of: card, matching: find.byTooltip('文件夹操作'));
+    expect(menu, findsOneWidget);
+    final bounds = tester.getRect(card);
+    final menuBounds = tester.getRect(menu);
+    expect(bounds.right - menuBounds.right, lessThanOrEqualTo(8));
+    expect(bounds.bottom - menuBounds.bottom, lessThanOrEqualTo(8));
+    await tester.tap(menu);
+    await settlePage(tester);
+    expect(find.text('重命名'), findsOneWidget);
+    expect(find.text('删除文件夹'), findsOneWidget);
+    await tester.tap(find.text('移动到文件夹…'));
+    await settlePage(tester);
+    await tester.tap(find.byKey(ValueKey('move-choice-${target.id}')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('移动到此处'));
+    await settlePage(tester);
+    expect(repository.findFolderById(disk.id)!.parentId, target.id);
+  });
+
+  testWidgets(
+    'video chooser browses nested folders and distinguishes root from cancellation',
+    (tester) async {
+      late LocalVideo video;
+      await tester.runAsync(() async {
+        video = (await repository.importFiles([
+          (await File(
+            '${temporary.path}/menu.mp4',
+          ).writeAsString('fixture')).path,
+        ])).added.single;
+      });
+      final parent = await repository.createVirtualFolder('分类');
+      final child = await repository.createVirtualFolder(
+        '嵌套',
+        parentId: parent.id,
+      );
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: repository, onPlay: onPlay),
+        ),
+      );
+      Future<void> openChooser() async {
+        await tester.tap(find.byTooltip('更多操作'));
+        await settlePage(tester);
+        await tester.tap(find.text('移动到文件夹…'));
+        await settlePage(tester);
+      }
+
+      await openChooser();
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, '移动到此处'))
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.byKey(ValueKey('move-choice-${parent.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey('move-choice-${child.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('取消'));
+      await settlePage(tester);
+      expect(repository.videosIn(null).single.id, video.id);
+      await openChooser();
+      await tester.tap(find.byKey(ValueKey('move-choice-${parent.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey('move-choice-${child.id}')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('移动到此处'));
+      await settlePage(tester);
+      expect(repository.videosIn(child.id).single.id, video.id);
+      await tester.tap(find.byKey(ValueKey('folder-${parent.id}')));
+      await settlePage(tester);
+      await tester.tap(find.byKey(ValueKey('folder-${child.id}')));
+      await settlePage(tester);
+      await openChooser();
+      await tester.tap(find.byKey(const ValueKey('move-choice-root')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('移动到此处'));
+      await settlePage(tester);
+      expect(repository.videosIn(child.id), isEmpty);
+      expect(repository.videosIn(null).single.id, video.id);
+    },
+  );
+  testWidgets(
+    'video menu stays bottom right and cancelled long press does not play',
+    (tester) async {
+      late LocalVideo video;
+      var plays = 0;
+      await tester.runAsync(() async {
+        video = (await repository.importFiles([
+          (await File(
+            '${temporary.path}/cancel.mp4',
+          ).writeAsString('fixture')).path,
+        ])).added.single;
+      });
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(
+            repository: repository,
+            onPlay: (_, _) async {
+              plays++;
+            },
+          ),
+        ),
+      );
+      final card = find.byKey(ValueKey('video-${video.id}'));
+      final menu = find.descendant(of: card, matching: find.byTooltip('更多操作'));
+      expect(
+        tester.getRect(card).bottom - tester.getRect(menu).bottom,
+        lessThanOrEqualTo(8),
+      );
+      final gesture = await startCardDrag(tester, card);
+      await gesture.moveBy(const Offset(30, 10));
+      await gesture.cancel();
+      await settlePage(tester);
+      expect(repository.videosIn(null).single.id, video.id);
+      expect(plays, 0);
+    },
+  );
+  testWidgets(
+    'drag edge scroll stops on cancel and sticky target stays visible',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(360, 800);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      for (var i = 0; i < 24; i++) {
+        await repository.createVirtualFolder(
+          '文件夹${i.toString().padLeft(2, '0')}',
+        );
+      }
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: repository, onPlay: onPlay),
+        ),
+      );
+      final scrollable = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(GridView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      final first = repository.foldersIn(null).first;
+      final gesture = await startCardDrag(
+        tester,
+        find.byKey(ValueKey('folder-${first.id}')),
+      );
+      final gridBounds = tester.getRect(find.byType(GridView));
+      await gesture.moveTo(Offset(gridBounds.center.dx, gridBounds.bottom - 8));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(scrollable.position.pixels, greaterThan(0));
+      expect(find.byKey(const ValueKey('move-library')), findsOneWidget);
+      await gesture.cancel();
+      await tester.pump();
+      final stopped = scrollable.position.pixels;
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(scrollable.position.pixels, stopped);
+      expect(find.byKey(const ValueKey('move-library')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'missing video can move to parent and current breadcrumb rejects a drop',
+    (tester) async {
+      final parent = await repository.createVirtualFolder('上层');
+      final child = await repository.createVirtualFolder(
+        '内层',
+        parentId: parent.id,
+      );
+      late LocalVideo video;
+      await tester.runAsync(() async {
+        final file = await File(
+          '${temporary.path}/offline.mp4',
+        ).writeAsString('fixture');
+        video = (await repository.importFiles([
+          file.path,
+        ], folderId: child.id)).added.single;
+        await file.delete();
+      });
+      var plays = 0;
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(
+            repository: repository,
+            onPlay: (_, _) async {
+              plays++;
+            },
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(ValueKey('folder-${parent.id}')));
+      await settlePage(tester);
+      await tester.tap(find.byKey(ValueKey('folder-${child.id}')));
+      await settlePage(tester);
+      await dragCard(
+        tester,
+        find.byKey(ValueKey('video-${video.id}')),
+        tester.getCenter(find.byKey(ValueKey('breadcrumb-${child.id}'))),
+      );
+      await settlePage(tester);
+      expect(repository.videosIn(child.id).single.id, video.id);
+      final gesture = await startCardDrag(
+        tester,
+        find.byKey(ValueKey('video-${video.id}')),
+      );
+      await gesture.moveTo(
+        tester.getCenter(find.byKey(const ValueKey('move-parent'))),
+      );
+      await gesture.up();
+      await settlePage(tester);
+      expect(repository.videosIn(child.id), isEmpty);
+      expect(repository.videosIn(parent.id).single.id, video.id);
+      expect(repository.findById(video.id)!.path, video.path);
+      expect(plays, 0);
+    },
+  );
+
+  testWidgets('only one card drag can be active at a time', (tester) async {
+    final first = await repository.createVirtualFolder('第一');
+    final second = await repository.createVirtualFolder('第二');
+    await pumpLibrary(
+      tester,
+      MaterialApp(
+        home: LocalVideoPage(repository: repository, onPlay: onPlay),
+      ),
+    );
+    final firstGesture = await startCardDrag(
+      tester,
+      find.byKey(ValueKey('folder-${first.id}')),
+    );
+    final secondGesture = await tester.startGesture(
+      tester.getCenter(find.byKey(ValueKey('folder-${second.id}'))),
+      pointer: 2,
+    );
+    await tester.pump(const Duration(milliseconds: 550));
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is Opacity && widget.opacity == 0.35,
+      ),
+      findsOneWidget,
+    );
+    await secondGesture.cancel();
+    await firstGesture.cancel();
+    await settlePage(tester);
+    expect(repository.foldersIn(null), hasLength(2));
+    expect(find.byKey(const ValueKey('move-library')), findsNothing);
+  });
+
+  for (final width in [360.0, 1280.0]) {
+    testWidgets('move chooser has no overflow at width $width', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = Size(width, 800);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      final folder = await repository.createVirtualFolder(
+        '很长的文件夹名称用于检查层级导航和移动弹窗',
+      );
+      await repository.createVirtualFolder('另一个很长的文件夹名称用于检查布局');
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: repository, onPlay: onPlay),
+        ),
+      );
+      final card = find.byKey(ValueKey('folder-${folder.id}'));
+      final menu = find.descendant(of: card, matching: find.byTooltip('文件夹操作'));
+      await tester.ensureVisible(menu);
+      await tester.pumpAndSettle();
+      await tester.tap(menu);
+      await settlePage(tester);
+      await tester.tap(find.text('移动到文件夹…'));
+      await settlePage(tester);
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('取消'));
+      await settlePage(tester);
+      expect(find.byType(CloseButton), findsOneWidget);
+    });
+  }
+
+  testWidgets(
+    'refresh retries failed library initialization before enabling actions',
+    (tester) async {
+      final retrying = _FailOnceInitializingRepository(
+        box,
+        foldersBox: _MemoryBox(),
+      );
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: retrying, onPlay: onPlay),
+        ),
+      );
+      expect(find.textContaining('媒体库初始化失败'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, '导入视频'))
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.refresh))
+            .onPressed,
+        isNotNull,
+      );
+      await tester.tap(find.byTooltip('刷新'));
+      await settlePage(tester);
+      expect(retrying.attempts, 2);
+      expect(find.textContaining('媒体库初始化失败'), findsNothing);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, '导入视频'))
+            .onPressed,
+        isNotNull,
+      );
+    },
+  );
+
+  testWidgets(
+    'drag keeps tracking after source card scrolls out of the grid cache',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(360, 800);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      for (var i = 0; i < 24; i++) {
+        await repository.createVirtualFolder(
+          '长列表${i.toString().padLeft(2, '0')}',
+        );
+      }
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: repository, onPlay: onPlay),
+        ),
+      );
+      final first = repository.foldersIn(null).first;
+      final card = find.byKey(ValueKey('folder-${first.id}'));
+      final gesture = await startCardDrag(tester, card);
+      final grid = tester.getRect(find.byType(GridView));
+      final scrollable = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(GridView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await gesture.moveTo(Offset(grid.center.dx, grid.bottom - 8));
+      await tester.pump(const Duration(seconds: 2));
+      expect(card, findsNothing);
+      final down = scrollable.position.pixels;
+      await gesture.moveTo(Offset(grid.center.dx, grid.top + 8));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(scrollable.position.pixels, lessThan(down));
+      await gesture.cancel();
+      await tester.pump();
+      final stopped = scrollable.position.pixels;
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(scrollable.position.pixels, stopped);
+      expect(find.byKey(const ValueKey('move-library')), findsNothing);
+    },
+  );
+
+  testWidgets('disposing the page during a drag stops edge scrolling', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(360, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    for (var i = 0; i < 8; i++) {
+      await repository.createVirtualFolder('离开${i.toString().padLeft(2, '0')}');
+    }
+    await pumpLibrary(
+      tester,
+      MaterialApp(
+        home: LocalVideoPage(repository: repository, onPlay: onPlay),
+      ),
+    );
+    final first = repository.foldersIn(null).first;
+    final gesture = await startCardDrag(
+      tester,
+      find.byKey(ValueKey('folder-${first.id}')),
+    );
+    final grid = tester.getRect(find.byType(GridView));
+    await gesture.moveTo(Offset(grid.center.dx, grid.bottom - 8));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpWidget(const SizedBox());
+    await gesture.cancel();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'same-frame pointer downs create only one drag and stop its scrolling',
+    (tester) async {
+      final first = await repository.createVirtualFolder('01');
+      final second = await repository.createVirtualFolder('02');
+      for (var i = 3; i < 24; i++) {
+        await repository.createVirtualFolder(i.toString().padLeft(2, '0'));
+      }
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: repository, onPlay: onPlay),
+        ),
+      );
+      final firstGesture = await tester.startGesture(
+        tester.getCenter(find.byKey(ValueKey('folder-${first.id}'))),
+        pointer: 1,
+      );
+      final secondGesture = await tester.startGesture(
+        tester.getCenter(find.byKey(ValueKey('folder-${second.id}'))),
+        pointer: 2,
+      );
+      await tester.pump(const Duration(milliseconds: 550));
+      expect(
+        find.byWidgetPredicate(
+          (widget) => widget is Opacity && widget.opacity == 0.35,
+        ),
+        findsOneWidget,
+      );
+      final grid = tester.getRect(find.byType(GridView));
+      final scrollable = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(GridView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await firstGesture.moveTo(Offset(grid.center.dx, grid.bottom - 8));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(scrollable.position.pixels, greaterThan(0));
+      await secondGesture.cancel();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('move-library')), findsOneWidget);
+      await firstGesture.cancel();
+      await tester.pump();
+      final stopped = scrollable.position.pixels;
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(scrollable.position.pixels, stopped);
+      expect(find.byKey(const ValueKey('move-library')), findsNothing);
+      expect(repository.foldersIn(null), hasLength(23));
+    },
+  );
+
+  for (final frames in [40, 160]) {
+    testWidgets(
+      'stationary edge drop uses current folder after $frames scroll frames',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(360, 800);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.view.resetPhysicalSize);
+        final parent = await repository.createVirtualFolder('容器');
+        for (var i = 0; i < 30; i++) {
+          await repository.createVirtualFolder(
+            i.toString().padLeft(2, '0'),
+            parentId: parent.id,
+          );
+        }
+        final children = repository.foldersIn(parent.id);
+        final source = children.first;
+        await pumpLibrary(
+          tester,
+          MaterialApp(
+            home: LocalVideoPage(repository: repository, onPlay: onPlay),
+          ),
+        );
+        await tester.tap(find.byKey(ValueKey('folder-${parent.id}')));
+        await settlePage(tester);
+        final gesture = await startCardDrag(
+          tester,
+          find.byKey(ValueKey('folder-${source.id}')),
+        );
+        final grid = tester.getRect(find.byType(GridView));
+        // The gap between the two sticky zones leaves the grid reachable.
+        final pointer = Offset(grid.center.dx, grid.bottom - 24);
+        LocalVideoFolder folderAtPointer() => children.firstWhere((folder) {
+          final card = find.byKey(ValueKey('folder-${folder.id}'));
+          return card.evaluate().isNotEmpty &&
+              tester.getRect(card).contains(pointer);
+        });
+        await gesture.moveTo(pointer);
+        await tester.pump();
+        final previous = folderAtPointer();
+        for (var i = 0; i < frames; i++) {
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        final current = folderAtPointer();
+        expect(current.id, isNot(previous.id));
+        expect(
+          find.byKey(ValueKey('folder-${previous.id}')),
+          frames == 40 ? findsOneWidget : findsNothing,
+        );
+        await gesture.up();
+        await settlePage(tester);
+        expect(repository.findFolderById(source.id)!.parentId, current.id);
+        expect(
+          repository.findFolderById(source.id)!.parentId,
+          isNot(previous.id),
+        );
+      },
+    );
+  }
+
+  testWidgets(
+    'rejected second pointer cannot drive the active drag edge scrolling',
+    (tester) async {
+      final first = await repository.createVirtualFolder('01');
+      final second = await repository.createVirtualFolder('02');
+      for (var i = 3; i < 24; i++) {
+        await repository.createVirtualFolder(i.toString().padLeft(2, '0'));
+      }
+      await pumpLibrary(
+        tester,
+        MaterialApp(
+          home: LocalVideoPage(repository: repository, onPlay: onPlay),
+        ),
+      );
+      final firstGesture = await startCardDrag(
+        tester,
+        find.byKey(ValueKey('folder-${first.id}')),
+      );
+      final secondGesture = await tester.startGesture(
+        tester.getCenter(find.byKey(ValueKey('folder-${second.id}'))),
+        pointer: 2,
+      );
+      await tester.pump(const Duration(milliseconds: 550));
+      final grid = tester.getRect(find.byType(GridView));
+      final scrollable = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(GridView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      final before = scrollable.position.pixels;
+      await secondGesture.moveTo(Offset(grid.center.dx, grid.bottom - 8));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(scrollable.position.pixels, before);
+      await secondGesture.cancel();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(scrollable.position.pixels, before);
+      await firstGesture.cancel();
+      await settlePage(tester);
+      expect(repository.foldersIn(null), hasLength(23));
+    },
+  );
 }
 
 class _TemporaryPaths extends PathProviderPlatform {
@@ -830,4 +1557,41 @@ class _FakeCovers extends Fake implements LocalVideoCoverService {
 
   @override
   Future<void> dispose() async => events.add('dispose');
+}
+
+Future<TestGesture> startCardDrag(WidgetTester tester, Finder card) async {
+  final gesture = await tester.startGesture(tester.getCenter(card));
+  await tester.pump(const Duration(milliseconds: 550));
+  return gesture;
+}
+
+Future<void> dragCard(WidgetTester tester, Finder card, Offset target) async {
+  final gesture = await startCardDrag(tester, card);
+  await gesture.moveTo(target);
+  await tester.pump();
+  await gesture.up();
+}
+
+class _InitializingRepository extends LocalVideoRepository {
+  _InitializingRepository(super.box, Box<String> folders, this.gate)
+    : super(foldersBox: folders);
+  final Completer<void> gate;
+  bool initializationStarted = false;
+  @override
+  Future<void> initializeLibraryLayout() async {
+    initializationStarted = true;
+    await gate.future;
+    await super.initializeLibraryLayout();
+  }
+}
+
+class _FailOnceInitializingRepository extends LocalVideoRepository {
+  _FailOnceInitializingRepository(super.box, {super.foldersBox});
+  int attempts = 0;
+  @override
+  Future<void> initializeLibraryLayout() async {
+    attempts++;
+    if (attempts == 1) throw StateError('temporary persistence failure');
+    await super.initializeLibraryLayout();
+  }
 }

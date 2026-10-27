@@ -77,7 +77,7 @@ void main() {
       repository.findById(video.id)!.subtitleSettings!.externalPath,
       'local.ass',
     );
-    expect(folderBox.length, 2);
+    expect(folderBox.length, 3);
     expect(jsonDecode(folderBox.get(disk.id)!)['type'], 'disk');
   });
 
@@ -149,7 +149,7 @@ void main() {
   });
 
   test(
-    'overlapping imports deduplicate paths and attach nearest disk parents',
+    'overlapping imports deduplicate paths and preserve organized parents',
     () async {
       final file = await createVideo(path.join('season', 'arc', '1.mp4'));
       final seasonPath = path.join(media.path, 'season');
@@ -163,7 +163,8 @@ void main() {
           .foldersIn(null)
           .singleWhere((item) => item.isDisk);
       final season = repository.foldersIn(root.id).single;
-      final arc = repository.foldersIn(season.id).single;
+      final arc = repository.findFolderById(arcId)!;
+      expect(repository.foldersIn(season.id), isEmpty);
       final variant = Platform.isWindows
           ? seasonPath.toUpperCase().replaceAll(r'\', '/')
           : path.join(seasonPath, '.', 'unused', '..');
@@ -171,8 +172,8 @@ void main() {
 
       expect(arc.id, arcId);
       expect(repository.folders.where((item) => item.isDisk), hasLength(3));
-      expect(repository.foldersIn(group.id), isEmpty);
-      expect(repository.findFolderById(arcId)!.parentId, season.id);
+      expect(repository.foldersIn(group.id).single.id, arcId);
+      expect(repository.findFolderById(arcId)!.parentId, group.id);
       expect(repository.videosIn(arcId).single.path, file.path);
       expect(duplicate.added, isEmpty);
       expect(duplicate.duplicateCount, 1);
@@ -181,7 +182,7 @@ void main() {
   );
 
   test(
-    'refresh scans one layer and retains missing videos and folders',
+    'refresh retains stored members without scanning new files or folders',
     () async {
       final original = await createVideo('1.mp4');
       await Directory(path.join(media.path, 'old-empty')).create();
@@ -194,20 +195,24 @@ void main() {
       await Directory(path.join(media.path, 'old-empty')).delete();
 
       final refreshed = await repository.refreshFolder(root.id);
+
+      expect(refreshed.added, isEmpty);
+      expect(refreshed.failedPaths, [original.path]);
+      expect(repository.findById(originalVideo.id), isNotNull);
+      expect(repository.foldersIn(root.id).map((item) => item.name), [
+        'old-empty',
+      ]);
+      expect(repository.videosIn(root.id).single.id, originalVideo.id);
+      expect(
+        repository.videos.any((item) => item.path == newDirect.path),
+        isFalse,
+      );
+      expect(repository.videos.any((item) => item.path == deep.path), isFalse);
+
+      await repository.importDirectory(media.path);
       final child = repository
           .foldersIn(root.id)
           .singleWhere((item) => item.name == 'new-child');
-
-      expect(refreshed.added.single.path, newDirect.path);
-      expect(repository.findById(originalVideo.id), isNotNull);
-      expect(repository.foldersIn(root.id).map((item) => item.name), [
-        'new-child',
-        'old-empty',
-      ]);
-      expect(repository.videosIn(child.id), isEmpty);
-      expect(repository.videos.any((item) => item.path == deep.path), isFalse);
-
-      await repository.refreshFolder(child.id);
 
       expect(repository.videosIn(child.id).single.path, deep.path);
       expect(repository.videosIn(root.id), hasLength(2));
@@ -266,7 +271,7 @@ void main() {
   );
 
   test(
-    'disk children derive from filesystem and reject virtual mutations',
+    'disk folders allow logical children rename and outside file imports',
     () async {
       final direct = await createVideo('1.mp4');
       final outside = await createVideo('outside.mp4', directory: temporary);
@@ -274,27 +279,26 @@ void main() {
       final disk = repository.folders.single;
       final video = repository.videos.single;
 
-      await expectLater(
-        repository.createVirtualFolder('invalid', parentId: disk.id),
-        throwsArgumentError,
+      final child = await repository.createVirtualFolder(
+        'child',
+        parentId: disk.id,
       );
-      await expectLater(
-        repository.renameFolder(disk.id, 'invalid'),
-        throwsArgumentError,
-      );
-      await expectLater(
-        repository.addVideosToFolder(disk.id, [video.id]),
-        throwsArgumentError,
-      );
+      await repository.renameFolder(disk.id, 'renamed');
+      await repository.addVideosToFolder(disk.id, [video.id]);
       final imported = await repository.importFiles([
         outside.path,
         direct.path,
       ], folderId: disk.id);
 
-      expect(imported.failedPaths, [outside.path]);
+      expect(imported.failedPaths, isEmpty);
       expect(imported.duplicateCount, 1);
-      expect(repository.videos, hasLength(1));
-      expect(repository.folders, hasLength(1));
+      expect(repository.findFolderById(disk.id)!.name, 'renamed');
+      expect(repository.findFolderById(disk.id)!.directoryPath, media.path);
+      expect(repository.foldersIn(disk.id).single.id, child.id);
+      expect(repository.videosIn(disk.id), hasLength(2));
+      expect(repository.videosIn(null), isEmpty);
+      expect(repository.videos, hasLength(2));
+      expect(repository.folders, hasLength(2));
     },
   );
 
@@ -432,7 +436,7 @@ void main() {
     expect(result.added, hasLength(1));
     expect(repository.videosIn(nested.id).single.id, result.added.single.id);
     expect(repository.videosIn(parent.id), isEmpty);
-    expect(repository.videosIn(null).single.id, result.added.single.id);
+    expect(repository.videosIn(null), isEmpty);
   });
 
   test('folder mutations require persistent storage', () async {

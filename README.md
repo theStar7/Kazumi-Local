@@ -15,6 +15,8 @@
 <p>使用 Flutter 开发的基于自定义规则的番剧采集与在线观看程序。使用最多五行基于 <code>Xpath</code> 语法的选择器构建自己的规则。支持规则导入与规则分享。支持基于 <code>Anime4K</code> 的实时超分辨率。绝赞开发中 (～￣▽￣)～</p>
 </div>
 
+本仓库基于 **Kazumi 2.4.1** 扩展 Windows 本地视频库，支持本地导入、文件夹整理、封面卡片、顺序连播、弹幕关联和内嵌 / 外挂字幕。新增功能目前仅在 Windows 提供，详见下方 [Windows 本地视频库](#windows-本地视频库)。
+
 ## 支持平台
 
 - Android 10 及以上
@@ -65,12 +67,46 @@
 - [X]  超分辨率
 - [X]  一起看
 - [X]  番剧下载
+- [X]  本地视频库与文件夹整理 (Windows，支持拖放和菜单移动)
+- [X]  本地视频封面、顺序连播与进度续播 (Windows)
+- [X]  本地视频弹幕关联 (Windows)
+- [X]  本地视频内嵌 / 外挂字幕 (Windows)
 - [ ]  番剧更新提醒
 - [ ]  还有更多 (/・ω・＼)
 
+## Windows 本地视频库
+
+### 导入与播放
+
+1. 在侧边导航或窄窗口底部选择 **本地**。
+2. 点击 **导入视频** 多选文件，或点击 **导入文件夹** 递归导入目录。视频以封面卡片展示，文件夹保留导入时的初始层级。
+3. 点击视频卡片开始播放。播放列表只包含打开视频时所在层的视频，按文件名自然排序，例如 `1.mp4 → 2.mp4 → 10.mp4`，不跨子文件夹。支持上一集、下一集；启用原有 **自动播放下一集** 设置后顺序连播，最后一项播完停止。
+4. 播放进度按视频保存，续播遵循现有播放设置；隐私模式下不更新观看进度。
+
+支持导入 MP4、MKV、AVI、MOV、WebM、FLV、WMV、M4V、TS、M2TS、MPG、MPEG，扩展名不区分大小写。实际解码能力由 media-kit 决定。
+
+### 文件夹与移动
+
+- 点击 **新建文件夹** 创建应用内分类，可嵌套、重命名或删除。在文件夹中使用 **添加已有视频**，可将同一视频放入多个分类，共用进度、字幕和弹幕关联。
+- **长按约半秒拖动** 视频或文件夹卡片，放到目标文件夹卡片上即可移入。拖到面包屑中的上级，或拖动时出现的 **移到上级 / 移到媒体库** 区域即可移出；靠近列表上下边缘可自动滚动。
+- 也可点击卡片 **右下角三个点 → 移动到文件夹…**，逐层选择目标后点击 **移动到此处**。支持移回媒体库根层；文件夹不能移入自身或其子文件夹。
+- 导入只记录源文件路径；应用内重命名、移动和删除文件夹不会移动、复制或删除磁盘文件。移动视频只移除来源位置的引用，保留它在其他分类中的引用。
+- **从文件夹移除** 只取消当前位置的引用；移除最后一个引用或删除文件夹后，没有其他位置的视频回到媒体库根层。根层的 **从列表移除** 会移除该视频的库记录及全部引用，源文件保留。
+- 进入文件夹或刷新只更新已导入文件的状态。磁盘目录新增内容后需再次 **导入文件夹**；重复导入会补充新内容，并保留已整理的名称和位置。
+
+### 字幕与弹幕
+
+- **更多选项 → 字幕**：选择视频内嵌软字幕，或通过 **添加外部字幕** 加载 SRT、ASS、SSA、VTT 文件。使用原生字幕渲染，支持 ASS / SSA 样式；每个视频记住所选字幕来源、轨道和开关状态。
+- **更多选项 → 弹幕切换**：搜索番剧并选择分集，为当前视频保存弹幕关联，下次播放时自动按关联加载。可在播放器或视频卡片菜单中 **清除弹幕关联**。
+- 本地视频和字幕播放可离线使用；弹幕搜索和加载需要网络及编译时配置的弹弹play API 凭据。暂不支持同名字幕自动扫描、字幕时间偏移或离线弹幕缓存。
+
+详细操作、数据保存位置及文件失效处理见 [Windows 本地视频使用说明](docs/WINDOWS_LOCAL_VIDEO.md)。
+
 ## 下载
 
-通过本页面 [Releases](https://github.com/Predidit/Kazumi/releases/latest) 选项卡下载：
+Windows 本地视频版请前往本仓库 [Releases](https://github.com/theStar7/Kazumi-Local/releases/latest) 下载 Windows x64 便携包。完整解压后运行 `kazumi.exe`，保留同目录的 DLL 和 `data`。自行编译步骤见 [Windows 本地视频版构建](#windows-本地视频版构建)。
+
+以下渠道提供上游 Kazumi 版本，可通过上游 [Releases](https://github.com/Predidit/Kazumi/releases/latest) 下载：
 
 <a href="https://github.com/Predidit/Kazumi/releases">
   <img src="static/svg/get_it_on_github.svg" alt="Get it on Github" width="200"/>
@@ -156,6 +192,23 @@ A: 本项目编译需要良好的网络环境, 除了由 Google 托管的 Flutte
 ## 开发
 
 欢迎您提交 PR！在开始之前, 请阅读 [贡献指引](static/doc/CONTRIBUTING.md) 以了解我们对 PR 和 AI 参与辅助开发的规定。
+
+### Windows 本地视频版构建
+
+使用 Flutter **3.47.7**，并准备 Windows C++ 构建环境及插件所需的符号链接权限。完整的依赖准备、构建命令和常见问题见 [开发与验证](docs/WINDOWS_LOCAL_VIDEO.md#开发与验证)。
+
+弹幕功能需要使用自己的弹弹play AppID 和 AppSecret，配置方法见 [弹幕 API 凭据](docs/WINDOWS_LOCAL_VIDEO.md#弹幕-api-凭据自行编译必需)。在项目根目录执行：
+
+```powershell
+Copy-Item .\config\dart_defines.example.json .\config\dart_defines.local.json
+notepad .\config\dart_defines.local.json
+# 填写 DANDANAPI_APPID 和 DANDANAPI_KEY 并保存后构建
+.\scripts\build_windows.ps1 -DartDefineFile .\config\dart_defines.local.json
+```
+
+本机凭据文件已被 Git 忽略，请勿提交。构建脚本优先使用项目内 `.tools/flutter`，否则使用 PATH 中的 Flutter。凭据在编译时注入，修改后需重新构建；缺少凭据时弹幕接口不可用，本地视频和字幕仍可播放。
+
+构建产物位于 `build/windows/x64/runner/Release/kazumi.exe`，运行时需保留整个 Release 目录中的 DLL 和 `data`。自动化检查结果与待人工验收范围见 [本地视频验证记录](docs/LOCAL_VIDEO_VERIFICATION.md)。
 
 ## 美术资源
 

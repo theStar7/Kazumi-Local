@@ -19,10 +19,12 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 // media. Run after verify_local_video_covers.dart generated the two JPEGs.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  final output = Directory('.dart_tool/local_video_library_validation');
+  final output = Directory('.dart_tool/local_video_move_validation');
+  final covers = Directory('.dart_tool/local_video_library_validation');
   late Directory settings;
   late PathProviderPlatform originalPaths;
   setUpAll(() async {
+    await output.create(recursive: true);
     settings = await Directory.systemTemp.createTemp('kazumi_library_preview_');
     originalPaths = PathProviderPlatform.instance;
     PathProviderPlatform.instance = _Paths(settings.path);
@@ -110,7 +112,7 @@ void main() {
             ),
             home: LocalVideoPage(
               repository: repository,
-              coverService: _Covers(output.absolute.path),
+              coverService: _Covers(covers.absolute.path),
               onPlay: (_, _) async {},
             ),
           ),
@@ -122,6 +124,31 @@ void main() {
         boundary,
         p.join(output.path, 'library_${width.toInt()}_root.png'),
       );
+      await tester.tap(find.byTooltip('文件夹操作').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('移动到文件夹…'));
+      await tester.pumpAndSettle();
+      await _save(
+        tester,
+        boundary,
+        p.join(output.path, 'library_${width.toInt()}_move_dialog.png'),
+      );
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      final source = find.byKey(
+        ValueKey('folder-${repository.foldersIn(null).first.id}'),
+      );
+      final drag = await tester.startGesture(tester.getCenter(source));
+      await tester.pump(const Duration(milliseconds: 550));
+      await drag.moveBy(const Offset(18, 10));
+      await tester.pump();
+      await _save(
+        tester,
+        boundary,
+        p.join(output.path, 'library_${width.toInt()}_drag.png'),
+      );
+      await drag.cancel();
+      await tester.pumpAndSettle();
       await tester.tap(find.text('继续观看').first);
       await _settle(tester);
       await _save(

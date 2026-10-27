@@ -1,5 +1,41 @@
 # 本地视频验证记录
 
+## 发布前复验（2026-10-28，v2.4.1-local.1）
+
+- 发布目标为 `theStar7/Kazumi-Local`，应用版本更新为 `2.4.1+20402`。本次收录本地视频库、字幕、文件夹与封面、当前层连播、应用内拖放与菜单移动，以及 README 使用说明。
+- 完整 `flutter test --no-pub --reporter expanded`：**397 通过 / 1 项既有 Windows 文件链接权限跳过**，退出码 0。
+- `flutter analyze --no-pub --no-fatal-infos --fatal-warnings`：退出码 0，无 error、warning，保留既有 **17 项 info**。
+- `flutter build windows --release --no-pub --dart-define-from-file=config/dart_defines.local.json`：**成功，退出码 0**，约 94.3 秒；使用本机编译配置，不提交凭据文件。仍有既有 NuGet 提示和 `webview_windows` CMP0175 开发警告。
+- 独立只读代码复核未发现阻断发布的缺陷，覆盖迁移、引用与删除、拖放生命周期、回归测试及文档一致性。
+- Windows x64 便携包保留整个 Release 目录的运行文件，并附项目许可证、第三方许可与 SHA-256 校验文件；本次不执行上游代码签名流程。
+- 本轮为自动测试、静态检查与正式构建复验；未重新执行完整 exe 的人工文件选择、拖动、全屏和跨重启验收，也未验收真实弹幕服务。原生封面与字幕的既有验证范围见下方历史记录。
+- 本轮日志位于已忽略的 `.dart_tool/release_20261028/`，不进入源码提交或发布附件。
+
+## 应用内拖放整理与快捷移动（2026-10-24，PlanA）
+
+基线提交 `41622f2`；当前分支 `PlanA`。本轮将导入后的层级改为应用内结构，加入显式根层引用、旧目录迁移、视频/文件夹移动，以及长按拖放和右下角菜单目标选择。软件整理不修改源媒体路径或文件；主动重新导入补充新内容，进入和刷新不扫描目录。
+
+### 自动测试与检查
+
+- 修改前完整测试：354 通过 / 1 项 Windows 文件链接权限跳过，退出码 0。
+- 数据层独立复跑：53 通过 / 1 跳过，退出码 0；包含新增 24 项迁移和移动回归。覆盖 Hive 重开、并发/失败迁移、根层显隐、多位置引用、循环限制、目标/来源写入失败、首次来源导入中断重试、三种加入入口后移出不被重导恢复，以及无文件系统写入。日志：`.dart_tool/local_video_move_validation/data_tests.log`。
+- 最终完整 `flutter test --no-pub --reporter expanded`：**397 通过 / 1 项既有权限跳过**，退出码 0，约 23 秒。相对基线新增 24 项数据回归和 19 项页面回归。日志：`.dart_tool/local_video_move_validation/unit_tests.log`。
+- 页面 **38 项**通过，涵盖长按移入、面包屑及固定区域移出、菜单分层选择与取消、当前位置/自身/后代限制、分类操作、初始化失败重试、原目录缺失后的逻辑整理，以及窗口关闭和当前层播放列表回归。拖动额外验证同帧双指仅一个拖动、第二指不影响滚动、来源卡片回收后继续跟踪、静止指针自动滚动后释放到当前可见目录（旧目标仍挂载/已回收）、取消及页面销毁停止滚动；相关缺口均先复现失败再修复。
+- 最终 `dart analyze`：退出码 0，无 error、warning，保留原有 **17 项 info**。日志：`.dart_tool/local_video_move_validation/analyze.log`。
+- `scripts/preview_local_video_library.dart`：**2 项通过**，退出码 0。已生成并复核 360×900 / 1280×900 下根层、分类、导入目录、移动弹窗和拖动状态共 **10 张截图**，无布局溢出；窄窗口拖动预览随指针靠边时可部分超出窗口。结果为 `.dart_tool/local_video_move_validation/library_*.png`，日志为同目录 `preview.log`。
+- 数据与页面的规格/质量复审均通过；`git diff --check` 和测试脚本 PowerShell 语法检查通过。原 `local_video.dart`、`player_item.dart`、`video_controller.dart`、`video_playback_args.dart` 和封面服务源代码相对基线不变。
+- 最终 `flutter build windows --release --no-pub`：**成功，退出码 0**，约 77.1 秒。程序为 `build/windows/x64/runner/Release/kazumi.exe`，`data/app.so` 同步更新；需保留整个 Release 目录运行。日志：`.dart_tool/local_video_move_validation/build_release.log`。仍有既有 NuGet 提示和 `webview_windows` CMP0175 开发警告；未创建安装包，弹幕凭据继续遵循使用说明的现有配置边界。
+- 最终 `libmpv-2.dll` SHA-256 为 `361e3a306707454a24e7d3558b2eb7a9ccc23a4f5ed396fe7e77f0a44908eda5`，与原生验证一致。
+- 当前分支保留 **PlanA**。对照 `.dart_tool/local_video_move_validation/starting_refs.txt`，所有本地分支及远端跟踪引用均不变，`kazumi-local/main` 仍为 `41622f28987b9fc5439b8d59885a06fa6736dda0`；本轮未提交、合并或推送。既有 `.vs/` 未改动。
+
+### 原生封面复核
+
+重新运行 `scripts/verify_local_video_covers.dart`：13 项断言通过，退出码 0。使用自制带音轨 MP4、实际封面服务和现有 Windows mpv，检查缓存、源文件变化、暂停释放、损坏视频和额外可见窗口数 0。日志：`.dart_tool/local_video_move_validation/native_covers.log`；机器报告仍由脚本输出到 `.dart_tool/local_video_library_validation/cover_report.json`。本轮没有改封面服务；这不代表人工扬声器听音或完整应用操作验收。
+
+### 操作验证边界
+
+界面验证使用控件测试和隔离合成素材截图，不读取用户媒体库。完整 Release exe 的人工拖动、真实文件选择、全屏和跨重启操作本轮尚未执行；自动测试、Hive 持久化测试和原生抽帧各自只证明对应范围。
+
 ## 文件夹、封面卡片与连播（2026-10-24）
 
 本轮在既有未提交本地视频/字幕功能上扩展，继续使用当前 `feature/windows-local-video` 工作目录。新增独立 `localVideoFolders` Hive 存储、磁盘目录树、应用内分类引用、封面缓存、响应式卡片及当前层播放队列。没有移动、复制或删除用户媒体，没有新增运行时依赖，也没有提交或推送代码。

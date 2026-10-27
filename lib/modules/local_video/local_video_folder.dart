@@ -1,3 +1,5 @@
+const _unchangedParent = Object();
+
 enum LocalVideoFolderType { disk, virtual }
 
 class LocalVideoFolder {
@@ -8,6 +10,7 @@ class LocalVideoFolder {
     this.parentId,
     this.directoryPath,
     this.videoIds = const [],
+    this.sourceVideoIds = const [],
   });
 
   final String id;
@@ -16,6 +19,7 @@ class LocalVideoFolder {
   final String? parentId;
   final String? directoryPath;
   final List<String> videoIds;
+  final List<String> sourceVideoIds;
 
   bool get isDisk => type == LocalVideoFolderType.disk;
   bool get isVirtual => type == LocalVideoFolderType.virtual;
@@ -28,6 +32,8 @@ class LocalVideoFolder {
       parentId: json['parentId'] as String?,
       directoryPath: json['directoryPath'] as String?,
       videoIds: (json['videoIds'] as List<dynamic>? ?? const []).cast<String>(),
+      sourceVideoIds: (json['sourceVideoIds'] as List<dynamic>? ?? const [])
+          .cast<String>(),
     );
   }
 
@@ -38,20 +44,25 @@ class LocalVideoFolder {
     'parentId': parentId,
     'directoryPath': directoryPath,
     'videoIds': videoIds,
+    if (isDisk) 'sourceVideoIds': sourceVideoIds,
   };
 
   LocalVideoFolder copyWith({
     String? name,
-    String? parentId,
+    Object? parentId = _unchangedParent,
     List<String>? videoIds,
+    List<String>? sourceVideoIds,
   }) {
     return LocalVideoFolder(
       id: id,
       name: name ?? this.name,
       type: type,
-      parentId: parentId ?? this.parentId,
+      parentId: identical(parentId, _unchangedParent)
+          ? this.parentId
+          : parentId as String?,
       directoryPath: directoryPath,
       videoIds: videoIds ?? this.videoIds,
+      sourceVideoIds: sourceVideoIds ?? this.sourceVideoIds,
     );
   }
 }

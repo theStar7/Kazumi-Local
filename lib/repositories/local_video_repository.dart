@@ -28,6 +28,9 @@ class LocalVideoRepository {
 
   final Box<String> _box;
   final Box<String>? _foldersBox;
+  Future<void>? _layoutInitialization;
+
+  static const _rootFolderId = '__local_video_library_root_v1__';
 
   static const _extensions = {
     '.mp4',
@@ -57,6 +60,7 @@ class LocalVideoRepository {
           jsonDecode(value) as Map<String, dynamic>,
         ),
       )
+      .where((folder) => folder.id != _rootFolderId)
       .toList();
 
   LocalVideo? findById(String id) {
@@ -67,10 +71,75 @@ class LocalVideoRepository {
   }
 
   LocalVideoFolder? findFolderById(String id) {
+    if (id == _rootFolderId) {
+      return null;
+    }
     final value = _foldersBox?.get(id);
     return value == null
         ? null
         : LocalVideoFolder.fromJson(jsonDecode(value) as Map<String, dynamic>);
+  }
+
+  LocalVideoFolder? get _rootFolder {
+    final value = _foldersBox?.get(_rootFolderId);
+    return value == null
+        ? null
+        : LocalVideoFolder.fromJson(jsonDecode(value) as Map<String, dynamic>);
+  }
+
+  Future<void> initializeLibraryLayout() async {
+    final pending = _layoutInitialization;
+    if (pending != null) {
+      return pending;
+    }
+    if (_foldersBox == null || _rootFolder != null) {
+      return;
+    }
+    final initialization = _migrateLibraryLayout();
+    _layoutInitialization = initialization;
+    try {
+      await initialization;
+    } finally {
+      _layoutInitialization = null;
+    }
+  }
+
+  Future<void> _migrateLibraryLayout() async {
+    final allVideos = videos;
+    final diskFolders = folders.where((folder) => folder.isDisk).toList();
+    final diskVideoIds = <String>{};
+    for (final folder in diskFolders) {
+      final directIds = allVideos
+          .where(
+            (video) =>
+                _pathIdentity(path.dirname(video.path)) ==
+                _pathIdentity(folder.directoryPath!),
+          )
+          .map((video) => video.id);
+      diskVideoIds.addAll(directIds);
+      await _putFolder(
+        folder.copyWith(
+          videoIds: {...folder.videoIds, ...directIds}.toList(),
+          sourceVideoIds: {
+            ...folder.sourceVideoIds,
+            ...folder.videoIds,
+            ...directIds,
+          }.toList(),
+        ),
+      );
+    }
+    // This record is also the completion marker, so persist it last.
+    await _putFolder(
+      LocalVideoFolder(
+        id: _rootFolderId,
+        name: '',
+        type: LocalVideoFolderType.virtual,
+        videoIds: allVideos
+            .where((video) => !diskVideoIds.contains(video.id))
+            .map((video) => video.id)
+            .toList(),
+      ),
+    );
   }
 
   List<LocalVideoFolder> foldersIn(String? parentId) =>
@@ -79,6 +148,14 @@ class LocalVideoRepository {
 
   List<LocalVideo> videosIn(String? folderId) {
     final allVideos = videos;
+    final root = _rootFolder;
+    if (root != null) {
+      final references = folderId == null
+          ? root.videoIds
+          : findFolderById(folderId)?.videoIds ?? <String>[];
+      return allVideos.where((video) => references.contains(video.id)).toList()
+        ..sort(_compareVideos);
+    }
     if (folderId == null) {
       final diskFolders = folders.where((folder) => folder.isDisk).toList();
       return allVideos
@@ -129,7 +206,8 @@ class LocalVideoRepository {
     String? parentId,
   }) async {
     _requireFoldersBox();
-    _validateVirtualParent(parentId);
+    await initializeLibraryLayout();
+    _validateParent(parentId);
     final random = Random.secure();
     final folder = LocalVideoFolder(
       id: sha256
@@ -144,7 +222,8 @@ class LocalVideoRepository {
   }
 
   Future<void> renameFolder(String id, String name) async {
-    final folder = _virtualFolder(id);
+    await initializeLibraryLayout();
+    final folder = _folder(id);
     await _putFolder(folder.copyWith(name: _folderName(name)));
   }
 
@@ -152,19 +231,63 @@ class LocalVideoRepository {
     String folderId,
     Iterable<String> videoIds,
   ) async {
-    final folder = _virtualFolder(folderId);
-    final references = folder.videoIds.toSet();
-    for (final id in videoIds) {
+    await initializeLibraryLayout();
+    _folder(folderId);
+    final ids = videoIds.toSet();
+    for (final id in ids) {
       if (findById(id) == null) {
         throw ArgumentError.value(id, 'videoIds', 'Video does not exist');
       }
-      references.add(id);
     }
-    await _putFolder(folder.copyWith(videoIds: references.toList()));
+    await _addReferences(folderId, ids);
+  }
+
+  Future<void> _addReferences(
+    String? folderId,
+    Iterable<String> videoIds,
+  ) async {
+    final folder = _membershipFolder(folderId);
+    final addedIds = videoIds.toSet();
+    final references = {...folder.videoIds, ...addedIds};
+    final sourceIds = {
+      ...folder.sourceVideoIds,
+      if (folder.isDisk) ...addedIds,
+    };
+    if (references.length != folder.videoIds.length ||
+        sourceIds.length != folder.sourceVideoIds.length) {
+      await _putFolder(
+        folder.copyWith(
+          videoIds: references.toList(),
+          sourceVideoIds: sourceIds.toList(),
+        ),
+      );
+    }
+  }
+
+  Future<void> _addSourceReference(
+    String folderId,
+    String videoId, {
+    required bool isNewRecord,
+  }) async {
+    final folder = _folder(folderId);
+    if (!isNewRecord && folder.sourceVideoIds.contains(videoId)) {
+      return;
+    }
+    await _putFolder(
+      folder.copyWith(
+        videoIds: {...folder.videoIds, videoId}.toList(),
+        sourceVideoIds: {...folder.sourceVideoIds, videoId}.toList(),
+      ),
+    );
   }
 
   Future<void> removeVideoFromFolder(String folderId, String videoId) async {
-    final folder = _virtualFolder(folderId);
+    await initializeLibraryLayout();
+    final folder = _folder(folderId);
+    if (!folder.videoIds.contains(videoId)) {
+      return;
+    }
+    await _returnOrphansToRoot([videoId], excludingFolders: {folderId});
     await _putFolder(
       folder.copyWith(
         videoIds: folder.videoIds.where((id) => id != videoId).toList(),
@@ -174,6 +297,8 @@ class LocalVideoRepository {
 
   Future<void> removeFolder(String id) async {
     final box = _requireFoldersBox();
+    await initializeLibraryLayout();
+    _folder(id);
     final allFolders = folders;
     final removedIds = <String>{id};
     var previousSize = 0;
@@ -185,28 +310,121 @@ class LocalVideoRepository {
             .map((folder) => folder.id),
       );
     }
+    await _returnOrphansToRoot(
+      allFolders
+          .where((folder) => removedIds.contains(folder.id))
+          .expand((folder) => folder.videoIds),
+      excludingFolders: removedIds,
+    );
     await box.deleteAll(removedIds);
+  }
+
+  Future<void> _returnOrphansToRoot(
+    Iterable<String> candidates, {
+    required Set<String> excludingFolders,
+  }) async {
+    final remainingIds = folders
+        .where((folder) => !excludingFolders.contains(folder.id))
+        .expand((folder) => folder.videoIds)
+        .toSet();
+    final orphanIds = candidates
+        .where((id) => !remainingIds.contains(id) && findById(id) != null)
+        .toSet();
+    if (orphanIds.isNotEmpty) {
+      await _addReferences(null, orphanIds);
+    }
+  }
+
+  Future<void> moveVideo(
+    String videoId, {
+    String? fromFolderId,
+    String? toFolderId,
+  }) async {
+    _requireFoldersBox();
+    await initializeLibraryLayout();
+    if (findById(videoId) == null) {
+      throw ArgumentError.value(videoId, 'videoId', 'Video does not exist');
+    }
+    final source = _membershipFolder(fromFolderId);
+    _membershipFolder(toFolderId);
+    if (!source.videoIds.contains(videoId)) {
+      throw ArgumentError.value(
+        videoId,
+        'videoId',
+        'Video is not in the source folder',
+      );
+    }
+    if (fromFolderId == toFolderId) {
+      return;
+    }
+    // Keep the source reference until the target has been persisted.
+    await _addReferences(toFolderId, [videoId]);
+    await _putFolder(
+      source.copyWith(
+        videoIds: source.videoIds.where((id) => id != videoId).toList(),
+      ),
+    );
+  }
+
+  bool canMoveFolder(String folderId, String? targetParentId) {
+    final folder = findFolderById(folderId);
+    if (folder == null || folder.parentId == targetParentId) {
+      return false;
+    }
+    var current = targetParentId;
+    final visited = <String>{};
+    while (current != null) {
+      if (current == folderId || !visited.add(current)) {
+        return false;
+      }
+      final parent = findFolderById(current);
+      if (parent == null) {
+        return false;
+      }
+      current = parent.parentId;
+    }
+    return true;
+  }
+
+  Future<void> moveFolder(String folderId, String? targetParentId) async {
+    await initializeLibraryLayout();
+    final folder = _folder(folderId);
+    _validateParent(targetParentId);
+    if (folder.parentId == targetParentId) {
+      return;
+    }
+    if (!canMoveFolder(folderId, targetParentId)) {
+      throw ArgumentError.value(
+        targetParentId,
+        'targetParentId',
+        'Cannot move a folder into itself or a descendant',
+      );
+    }
+    await _putFolder(folder.copyWith(parentId: targetParentId));
   }
 
   Future<LocalVideoImportResult> importFiles(
     Iterable<String> paths, {
     String? folderId,
   }) async {
-    final folder = folderId == null ? null : _folder(folderId);
-    final references = <String>[];
+    await initializeLibraryLayout();
+    return _importFiles(paths, folderId: folderId);
+  }
+
+  Future<LocalVideoImportResult> _importFiles(
+    Iterable<String> paths, {
+    String? folderId,
+    bool sourceImport = false,
+  }) async {
+    if (folderId != null) {
+      _folder(folderId);
+    }
     final added = <LocalVideo>[];
     final failedPaths = <String>[];
     var duplicateCount = 0;
     var unsupportedCount = 0;
     for (final input in paths) {
       final absolutePath = path.normalize(path.absolute(input));
-      if (folder != null &&
-          folder.isDisk &&
-          _pathIdentity(path.dirname(absolutePath)) !=
-              _pathIdentity(folder.directoryPath!)) {
-        failedPaths.add(absolutePath);
-        continue;
-      }
       if (!_extensions.contains(path.extension(absolutePath).toLowerCase())) {
         unsupportedCount++;
         continue;
@@ -222,8 +440,17 @@ class LocalVideoRepository {
       final id = sha256
           .convert(utf8.encode(_pathIdentity(absolutePath)))
           .toString();
-      references.add(id);
-      if (_box.containsKey(id)) {
+      final exists = _box.containsKey(id);
+      // Keep source history and membership in the same write, before storing
+      // a new video, so retries can recover only the unfinished references.
+      if (_foldersBox != null) {
+        if (sourceImport) {
+          await _addSourceReference(folderId!, id, isNewRecord: !exists);
+        } else {
+          await _addReferences(folderId, [id]);
+        }
+      }
+      if (exists) {
         duplicateCount++;
         continue;
       }
@@ -234,9 +461,6 @@ class LocalVideoRepository {
       );
       await _box.put(id, jsonEncode(video.toJson()));
       added.add(video);
-    }
-    if (folder != null && folder.isVirtual) {
-      await addVideosToFolder(folder.id, references);
     }
     return LocalVideoImportResult(
       added: added,
@@ -251,27 +475,40 @@ class LocalVideoRepository {
     String? parentId,
   }) async {
     _requireFoldersBox();
-    _validateVirtualParent(parentId);
+    await initializeLibraryLayout();
+    _validateParent(parentId);
     final rootPath = path.normalize(path.absolute(directory));
-    final paths = <String>[];
+    final added = <LocalVideo>[];
     final failedPaths = <String>[];
+    var duplicateCount = 0;
+    var unsupportedCount = 0;
 
     Future<void> scan(Directory current, String? parentId) async {
       final folder = await _registerDiskFolder(
         current.path,
         parentId: parentId,
       );
+      final directPaths = <String>[];
       try {
         await for (final entity in current.list(followLinks: false)) {
           if (entity is Directory) {
             await scan(entity, folder.id);
           } else if (entity is File) {
-            paths.add(entity.path);
+            directPaths.add(entity.path);
           }
         }
       } on FileSystemException {
         failedPaths.add(current.path);
       }
+      final result = await _importFiles(
+        directPaths,
+        folderId: folder.id,
+        sourceImport: true,
+      );
+      added.addAll(result.added);
+      failedPaths.addAll(result.failedPaths);
+      duplicateCount += result.duplicateCount;
+      unsupportedCount += result.unsupportedCount;
     }
 
     try {
@@ -285,54 +522,33 @@ class LocalVideoRepository {
       failedPaths.add(rootPath);
     }
 
-    await _reconcileDiskParents();
-    final result = await importFiles(paths);
     return LocalVideoImportResult(
-      added: result.added,
-      failedPaths: [...failedPaths, ...result.failedPaths],
-      duplicateCount: result.duplicateCount,
-      unsupportedCount: result.unsupportedCount,
+      added: added,
+      failedPaths: failedPaths,
+      duplicateCount: duplicateCount,
+      unsupportedCount: unsupportedCount,
     );
   }
 
   Future<LocalVideoImportResult> refreshFolder(String id) async {
+    await initializeLibraryLayout();
     final folder = _folder(id);
-    if (folder.isVirtual) {
-      return const LocalVideoImportResult(added: [], failedPaths: []);
-    }
-    final directory = folder.directoryPath!;
-    final paths = <String>[];
     final failedPaths = <String>[];
-    try {
-      if (await FileSystemEntity.type(directory, followLinks: false) !=
-          FileSystemEntityType.directory) {
-        failedPaths.add(directory);
-      } else {
-        await for (final entity in Directory(
-          directory,
-        ).list(followLinks: false)) {
-          if (entity is Directory) {
-            await _registerDiskFolder(entity.path, parentId: folder.id);
-          } else if (entity is File) {
-            paths.add(entity.path);
-          }
-        }
-      }
-    } on FileSystemException {
-      failedPaths.add(directory);
+    if (folder.isDisk && !await Directory(folder.directoryPath!).exists()) {
+      failedPaths.add(folder.directoryPath!);
     }
-    await _reconcileDiskParents();
-    final result = await importFiles(paths, folderId: folder.id);
-    return LocalVideoImportResult(
-      added: result.added,
-      failedPaths: [...failedPaths, ...result.failedPaths],
-      duplicateCount: result.duplicateCount,
-      unsupportedCount: result.unsupportedCount,
-    );
+    for (final video in videosIn(id)) {
+      if (!await File(video.path).exists()) {
+        failedPaths.add(video.path);
+      }
+    }
+    return LocalVideoImportResult(added: const [], failedPaths: failedPaths);
   }
 
   Future<void> remove(String id) async {
-    for (final folder in folders.where(
+    await initializeLibraryLayout();
+    final referenceFolders = [...folders, ?_rootFolder];
+    for (final folder in referenceFolders.where(
       (folder) => folder.videoIds.contains(id),
     )) {
       await _putFolder(
@@ -349,6 +565,7 @@ class LocalVideoRepository {
     Duration position,
     Duration duration,
   ) async {
+    await initializeLibraryLayout();
     final video = findById(id);
     if (video == null) {
       return;
@@ -364,6 +581,7 @@ class LocalVideoRepository {
     String id,
     LocalDanmakuBinding? binding,
   ) async {
+    await initializeLibraryLayout();
     final video = findById(id);
     if (video == null) {
       return;
@@ -379,6 +597,7 @@ class LocalVideoRepository {
     String id,
     LocalSubtitleSettings? settings,
   ) async {
+    await initializeLibraryLayout();
     final video = findById(id);
     if (video == null) {
       return;
@@ -402,21 +621,12 @@ class LocalVideoRepository {
         (throw ArgumentError.value(id, 'folderId', 'Folder does not exist'));
   }
 
-  LocalVideoFolder _virtualFolder(String id) {
-    final folder = _folder(id);
-    if (!folder.isVirtual) {
-      throw ArgumentError.value(
-        id,
-        'folderId',
-        'Disk folders follow the filesystem',
-      );
-    }
-    return folder;
-  }
+  LocalVideoFolder _membershipFolder(String? folderId) =>
+      folderId == null ? _rootFolder! : _folder(folderId);
 
-  void _validateVirtualParent(String? parentId) {
+  void _validateParent(String? parentId) {
     if (parentId != null) {
-      _virtualFolder(parentId);
+      _folder(parentId);
     }
   }
 
@@ -428,16 +638,25 @@ class LocalVideoRepository {
     return trimmed;
   }
 
-  Future<LocalVideoFolder> _registerDiskFolder(
-    String directory, {
-    String? parentId,
-  }) async {
+  LocalVideoFolder? _diskFolderAt(String directory) {
     final identity = _pathIdentity(directory);
     for (final folder in folders) {
       if (folder.isDisk && _pathIdentity(folder.directoryPath!) == identity) {
         return folder;
       }
     }
+    return null;
+  }
+
+  Future<LocalVideoFolder> _registerDiskFolder(
+    String directory, {
+    String? parentId,
+  }) async {
+    final existing = _diskFolderAt(directory);
+    if (existing != null) {
+      return existing;
+    }
+    final identity = _pathIdentity(directory);
     final directoryPath = path.normalize(path.absolute(directory));
     final folder = LocalVideoFolder(
       id: sha256.convert(utf8.encode('folder:$identity')).toString(),
@@ -450,29 +669,8 @@ class LocalVideoRepository {
     return folder;
   }
 
-  Future<void> _reconcileDiskParents() async {
-    final diskFolders = folders.where((folder) => folder.isDisk).toList();
-    for (final folder in diskFolders) {
-      LocalVideoFolder? nearest;
-      for (final candidate in diskFolders) {
-        if (_isWithin(candidate.directoryPath!, folder.directoryPath!) &&
-            (nearest == null ||
-                candidate.directoryPath!.length >
-                    nearest.directoryPath!.length)) {
-          nearest = candidate;
-        }
-      }
-      if (nearest != null && folder.parentId != nearest.id) {
-        await _putFolder(folder.copyWith(parentId: nearest.id));
-      }
-    }
-  }
-
   static String _pathIdentity(String value) =>
       path.normalize(path.absolute(value)).replaceAll(r'\', '/').toLowerCase();
-
-  static bool _isWithin(String directory, String target) =>
-      path.posix.isWithin(_pathIdentity(directory), _pathIdentity(target));
 
   static int _compareVideos(LocalVideo a, LocalVideo b) {
     final order = _compareNames(a.name, b.name);

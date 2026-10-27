@@ -50,6 +50,7 @@ try {
         test/local_video_model_test.dart `
         test/local_video_repository_test.dart `
         test/local_video_folder_repository_test.dart `
+        test/local_video_move_repository_test.dart `
         test/local_video_navigation_test.dart `
         test/episode_danmaku_loader_test.dart `
         test/async_session_test.dart `
